@@ -23,8 +23,20 @@ LOG_DIR="/var/log/mikrotik-vpn"
 BACKUP_DIR="/opt/mikrotik-vpn/backups"
 SCRIPT_DIR="/opt/mikrotik-vpn/scripts"
 
-# Create initial directories
-mkdir -p $SYSTEM_DIR $LOG_DIR $BACKUP_DIR $SCRIPT_DIR
+# Create initial directories early to avoid path issues
+create_initial_directories() {
+    mkdir -p $SYSTEM_DIR
+    mkdir -p $LOG_DIR
+    mkdir -p $BACKUP_DIR
+    mkdir -p $SCRIPT_DIR
+    
+    # Create a basic log file if it doesn't exist
+    touch $LOG_DIR/setup.log
+    chmod 644 $LOG_DIR/setup.log
+}
+
+# Call this function immediately
+create_initial_directories
 
 # Logging function
 log() {
@@ -279,6 +291,22 @@ phase1_system_preparation() {
     log "PHASE 1: SYSTEM PREPARATION"
     log "==================================================================="
     
+    # Ensure all directories exist with proper permissions
+    log "Creating comprehensive system directories..."
+    mkdir -p $SYSTEM_DIR/{data,logs,backups,configs,ssl,scripts,clients}
+    mkdir -p $SYSTEM_DIR/{mongodb,redis,nginx,openvpn,l2tp,monitoring}
+    mkdir -p $SYSTEM_DIR/nginx/{conf.d,html,ssl}
+    mkdir -p $SYSTEM_DIR/openvpn/{server,client-configs,easy-rsa}
+    mkdir -p $SYSTEM_DIR/monitoring/{prometheus,grafana}
+    mkdir -p $BACKUP_DIR/{daily,weekly,monthly}
+    mkdir -p $LOG_DIR
+    
+    # Set proper ownership early
+    chown -R root:root $SYSTEM_DIR
+    chown -R root:root $LOG_DIR
+    chmod -R 755 $SYSTEM_DIR
+    chmod -R 755 $LOG_DIR
+    
     log "Updating system packages..."
     apt update && apt upgrade -y
     
@@ -329,21 +357,26 @@ phase1_system_preparation() {
         rkhunter
     
     log "Creating system directories..."
-    mkdir -p $SYSTEM_DIR/{data,logs,backups,configs,ssl,scripts,clients}
-    mkdir -p $SYSTEM_DIR/{mongodb,redis,nginx,openvpn,l2tp,monitoring}
-    mkdir -p $SYSTEM_DIR/nginx/{conf.d,html,ssl}
-    mkdir -p $SYSTEM_DIR/openvpn/{server,client-configs,easy-rsa}
-    mkdir -p $BACKUP_DIR/{daily,weekly,monthly}
+    # Directories are already created in phase1, just ensure permissions
+    chown -R mikrotik-vpn:mikrotik-vpn $SYSTEM_DIR
+    chmod -R 755 $SYSTEM_DIR
+    chmod 700 $SYSTEM_DIR/configs  # More restrictive for config files
     
     # Create system user for application
     if ! id "mikrotik-vpn" &>/dev/null; then
-        useradd -r -m -s /bin/bash -d $SYSTEM_DIR mikrotik-vpn
+        useradd -r -m -s /bin/bash -d /home/mikrotik-vpn mikrotik-vpn
         log "Created mikrotik-vpn system user"
     else
         log "mikrotik-vpn user already exists"
     fi
     
+    # Set proper ownership for the application user
     chown -R mikrotik-vpn:mikrotik-vpn $SYSTEM_DIR
+    chown -R mikrotik-vpn:mikrotik-vpn $LOG_DIR
+    
+    # Set secure permissions for sensitive directories
+    chmod 700 $SYSTEM_DIR/configs
+    chmod 600 $SYSTEM_DIR/configs/setup.env 2>/dev/null || true
     
     log "Setting up system optimizations..."
     create_system_optimizations
@@ -3228,7 +3261,15 @@ install_mikrotik_vpn_system() {
     # Get user configuration
     get_user_input
     
+    # Create necessary directories first
+    log "Creating system directories..."
+    mkdir -p $SYSTEM_DIR/{configs,data,logs,backups,scripts,ssl,clients}
+    mkdir -p $LOG_DIR
+    mkdir -p $BACKUP_DIR/{daily,weekly,monthly}
+    mkdir -p $SCRIPT_DIR
+    
     # Save configuration for later use
+    log "Saving configuration..."
     cat << EOF > $SYSTEM_DIR/configs/setup.env
 DOMAIN_NAME=$DOMAIN_NAME
 ADMIN_EMAIL=$ADMIN_EMAIL
@@ -3241,6 +3282,9 @@ REDIS_PASSWORD=$REDIS_PASSWORD
 INSTALLATION_DATE=$(date)
 SYSTEM_VERSION=2.0
 EOF
+    
+    # Set proper permissions
+    chmod 600 $SYSTEM_DIR/configs/setup.env
     
     # Execute installation phases
     log "Starting installation phases..."
