@@ -61,44 +61,206 @@ get_user_input() {
     # Domain configuration
     while true; do
         read -p "Enter your domain name (e.g., vpn.yourcompany.com): " DOMAIN_NAME
-        if [[ $DOMAIN_NAME =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]?\.[a-zA-Z]{2,}$ ]]; then
+        
+        # Remove leading/trailing whitespace
+        DOMAIN_NAME=$(echo "$DOMAIN_NAME" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        
+        # Check if domain is not empty
+        if [ -z "$DOMAIN_NAME" ]; then
+            echo "Domain name cannot be empty. Please try again."
+            continue
+        fi
+        
+        # More flexible domain validation
+        # Allow: letters, numbers, dots, hyphens
+        # Must have at least one dot
+        # Cannot start or end with hyphen or dot
+        if [[ $DOMAIN_NAME =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$ ]] && \
+           [[ ! $DOMAIN_NAME =~ \.\. ]] && \
+           [[ ${#DOMAIN_NAME} -le 255 ]]; then
             break
         else
-            echo "Invalid domain name format. Please try again."
+            echo "Invalid domain name format. Please enter a valid domain (e.g., example.com, sub.domain.org)."
+            echo "Domain should:"
+            echo "  - Contain only letters, numbers, dots, and hyphens"
+            echo "  - Have at least one dot"
+            echo "  - Not start or end with hyphen or dot"
+            echo "  - Be less than 256 characters"
         fi
     done
     
-    # Email configuration
+    # Email configuration with more flexible validation
     while true; do
         read -p "Enter admin email address: " ADMIN_EMAIL
-        if [[ $ADMIN_EMAIL =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+        
+        # Remove leading/trailing whitespace
+        ADMIN_EMAIL=$(echo "$ADMIN_EMAIL" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        
+        # Check if email is not empty
+        if [ -z "$ADMIN_EMAIL" ]; then
+            echo "Email address cannot be empty. Please try again."
+            continue
+        fi
+        
+        # More flexible email validation
+        if [[ $ADMIN_EMAIL =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] && \
+           [[ ! $ADMIN_EMAIL =~ \.\. ]] && \
+           [[ ! $ADMIN_EMAIL =~ @\. ]] && \
+           [[ ! $ADMIN_EMAIL =~ \.@ ]] && \
+           [[ ${#ADMIN_EMAIL} -le 254 ]]; then
             break
         else
-            echo "Invalid email format. Please try again."
+            echo "Invalid email format. Please enter a valid email address (e.g., admin@example.com)."
         fi
     done
     
-    # SSH port configuration
-    read -p "Enter SSH port (default 22): " SSH_PORT
-    SSH_PORT=${SSH_PORT:-22}
+    # SSH port configuration with validation
+    while true; do
+        read -p "Enter SSH port (default 22): " SSH_PORT
+        SSH_PORT=${SSH_PORT:-22}
+        
+        # Validate SSH port (1-65535, avoid well-known ports if not default)
+        if [[ $SSH_PORT =~ ^[0-9]+$ ]] && [ "$SSH_PORT" -ge 1 ] && [ "$SSH_PORT" -le 65535 ]; then
+            # Warn about common ports
+            case $SSH_PORT in
+                22) break ;;  # Default SSH port
+                80|443|21|23|25|53|110|143|993|995)
+                    echo "Warning: Port $SSH_PORT is commonly used by other services."
+                    read -p "Are you sure you want to use this port? (y/n): " confirm
+                    if [[ $confirm =~ ^[Yy]$ ]]; then
+                        break
+                    fi
+                    ;;
+                *) break ;;
+            esac
+        else
+            echo "Invalid port number. Please enter a number between 1 and 65535."
+        fi
+    done
     
-    # Timezone configuration
+    # Timezone configuration with suggestions
+    echo
+    echo "Common timezones:"
+    echo "  Asia/Bangkok (Thailand)"
+    echo "  Asia/Singapore (Singapore)" 
+    echo "  Asia/Jakarta (Indonesia)"
+    echo "  Asia/Manila (Philippines)"
+    echo "  Asia/Kuala_Lumpur (Malaysia)"
+    echo "  UTC (Universal Time)"
+    echo
     read -p "Enter timezone (default Asia/Bangkok): " TIMEZONE
     TIMEZONE=${TIMEZONE:-Asia/Bangkok}
     
-    # VPN configuration
-    read -p "Enter VPN network (default 10.8.0.0/24): " VPN_NETWORK
-    VPN_NETWORK=${VPN_NETWORK:-10.8.0.0/24}
+    # Validate timezone
+    if ! timedatectl list-timezones | grep -q "^$TIMEZONE$"; then
+        echo "Warning: Timezone '$TIMEZONE' may not be valid. Using Asia/Bangkok as fallback."
+        TIMEZONE="Asia/Bangkok"
+    fi
     
-    # Database passwords
+    # VPN network configuration with validation
+    while true; do
+        read -p "Enter VPN network (default 10.8.0.0/24): " VPN_NETWORK
+        VPN_NETWORK=${VPN_NETWORK:-10.8.0.0/24}
+        
+        # Basic CIDR validation
+        if [[ $VPN_NETWORK =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]; then
+            # Extract IP and prefix
+            IFS='/' read -r ip prefix <<< "$VPN_NETWORK"
+            IFS='.' read -r i1 i2 i3 i4 <<< "$ip"
+            
+            # Validate IP octets and prefix
+            if [ "$i1" -le 255 ] && [ "$i2" -le 255 ] && [ "$i3" -le 255 ] && [ "$i4" -le 255 ] && \
+               [ "$prefix" -ge 8 ] && [ "$prefix" -le 30 ]; then
+                # Suggest private network ranges
+                if [[ $ip =~ ^10\. ]] || [[ $ip =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]] || [[ $ip =~ ^192\.168\. ]]; then
+                    break
+                else
+                    echo "Warning: '$VPN_NETWORK' is not a private network range."
+                    echo "Recommended private ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16"
+                    read -p "Continue anyway? (y/n): " confirm
+                    if [[ $confirm =~ ^[Yy]$ ]]; then
+                        break
+                    fi
+                fi
+            else
+                echo "Invalid network format. Please use CIDR notation (e.g., 10.8.0.0/24)."
+            fi
+        else
+            echo "Invalid network format. Please use CIDR notation (e.g., 10.8.0.0/24)."
+        fi
+    done
+    
+    # Database passwords with strength validation
     echo
     echo "Database Configuration:"
-    read -s -p "Enter MongoDB root password: " MONGO_ROOT_PASSWORD
+    echo "Passwords should be at least 8 characters long and contain mixed characters."
+    
+    while true; do
+        read -s -p "Enter MongoDB root password: " MONGO_ROOT_PASSWORD
+        echo
+        if [ ${#MONGO_ROOT_PASSWORD} -ge 8 ]; then
+            read -s -p "Confirm MongoDB root password: " confirm_mongo
+            echo
+            if [ "$MONGO_ROOT_PASSWORD" = "$confirm_mongo" ]; then
+                break
+            else
+                echo "Passwords do not match. Please try again."
+            fi
+        else
+            echo "Password must be at least 8 characters long."
+        fi
+    done
+    
+    while true; do
+        read -s -p "Enter MongoDB app password: " MONGO_APP_PASSWORD
+        echo
+        if [ ${#MONGO_APP_PASSWORD} -ge 8 ]; then
+            read -s -p "Confirm MongoDB app password: " confirm_app
+            echo
+            if [ "$MONGO_APP_PASSWORD" = "$confirm_app" ]; then
+                break
+            else
+                echo "Passwords do not match. Please try again."
+            fi
+        else
+            echo "Password must be at least 8 characters long."
+        fi
+    done
+    
+    while true; do
+        read -s -p "Enter Redis password: " REDIS_PASSWORD
+        echo
+        if [ ${#REDIS_PASSWORD} -ge 8 ]; then
+            read -s -p "Confirm Redis password: " confirm_redis
+            echo
+            if [ "$REDIS_PASSWORD" = "$confirm_redis" ]; then
+                break
+            else
+                echo "Passwords do not match. Please try again."
+            fi
+        else
+            echo "Password must be at least 8 characters long."
+        fi
+    done
+    
+    # Summary of configuration
     echo
-    read -s -p "Enter MongoDB app password: " MONGO_APP_PASSWORD
+    echo "==================================================================="
+    echo "Configuration Summary:"
+    echo "==================================================================="
+    echo "Domain Name: $DOMAIN_NAME"
+    echo "Admin Email: $ADMIN_EMAIL"
+    echo "SSH Port: $SSH_PORT"
+    echo "Timezone: $TIMEZONE"
+    echo "VPN Network: $VPN_NETWORK"
+    echo "==================================================================="
     echo
-    read -s -p "Enter Redis password: " REDIS_PASSWORD
-    echo
+    
+    read -p "Is this configuration correct? (y/n): " confirm_config
+    if [[ ! $confirm_config =~ ^[Yy]$ ]]; then
+        echo "Configuration cancelled. Please run the script again."
+        exit 0
+    fi
     
     # Export variables
     export DOMAIN_NAME ADMIN_EMAIL SSH_PORT TIMEZONE VPN_NETWORK
