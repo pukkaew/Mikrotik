@@ -301,11 +301,12 @@ phase1_system_preparation() {
     mkdir -p $BACKUP_DIR/{daily,weekly,monthly}
     mkdir -p $LOG_DIR
     
-    # Set proper ownership early
+    # Set initial ownership to root (before creating mikrotik-vpn user)
     chown -R root:root $SYSTEM_DIR
     chown -R root:root $LOG_DIR
     chmod -R 755 $SYSTEM_DIR
     chmod -R 755 $LOG_DIR
+    chmod 700 $SYSTEM_DIR/configs  # More restrictive for config files
     
     log "Updating system packages..."
     apt update && apt upgrade -y
@@ -356,21 +357,20 @@ phase1_system_preparation() {
         clamav-freshclam \
         rkhunter
     
-    log "Creating system directories..."
-    # Directories are already created in phase1, just ensure permissions
-    chown -R mikrotik-vpn:mikrotik-vpn $SYSTEM_DIR
-    chmod -R 755 $SYSTEM_DIR
-    chmod 700 $SYSTEM_DIR/configs  # More restrictive for config files
-    
-    # Create system user for application
+    # Create system user for application AFTER directories are created
     if ! id "mikrotik-vpn" &>/dev/null; then
+        log "Creating mikrotik-vpn system user..."
         useradd -r -m -s /bin/bash -d /home/mikrotik-vpn mikrotik-vpn
-        log "Created mikrotik-vpn system user"
+        
+        # Add to docker group (will be created later in docker installation)
+        # This will be done again in phase2 to ensure it works
+        log "Created mikrotik-vpn system user successfully"
     else
         log "mikrotik-vpn user already exists"
     fi
     
-    # Set proper ownership for the application user
+    # NOW set proper ownership for the application user
+    log "Setting proper file ownership..."
     chown -R mikrotik-vpn:mikrotik-vpn $SYSTEM_DIR
     chown -R mikrotik-vpn:mikrotik-vpn $LOG_DIR
     
@@ -3261,12 +3261,17 @@ install_mikrotik_vpn_system() {
     # Get user configuration
     get_user_input
     
-    # Create necessary directories first
-    log "Creating system directories..."
+    # Create necessary directories first (with root ownership initially)
+    log "Creating initial system directories..."
     mkdir -p $SYSTEM_DIR/{configs,data,logs,backups,scripts,ssl,clients}
     mkdir -p $LOG_DIR
     mkdir -p $BACKUP_DIR/{daily,weekly,monthly}
     mkdir -p $SCRIPT_DIR
+    
+    # Set initial root ownership
+    chown -R root:root $SYSTEM_DIR $LOG_DIR
+    chmod -R 755 $SYSTEM_DIR $LOG_DIR
+    chmod 700 $SYSTEM_DIR/configs
     
     # Save configuration for later use
     log "Saving configuration..."
@@ -3283,7 +3288,7 @@ INSTALLATION_DATE=$(date)
 SYSTEM_VERSION=2.0
 EOF
     
-    # Set proper permissions
+    # Set proper permissions for config file
     chmod 600 $SYSTEM_DIR/configs/setup.env
     
     # Execute installation phases
