@@ -3117,7 +3117,7 @@ view_logs() {
             cd $SYSTEM_DIR
             for compose_file in docker-compose-*.yml; do
                 if [ -f "$compose_file" ]; then
-                    docker compose -f $compose_file logs --tail=50
+                    docker compose -f "$compose_file" logs --tail=50
                 fi
             done
             ;;
