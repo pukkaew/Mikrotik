@@ -1,8 +1,9 @@
 #!/bin/bash
 # =============================================================================
-# MikroTik VPN Management System - Complete Setup Scripts
-# Version: 2.0 (Fixed Syntax)
+# MikroTik VPN Management System - Complete Installation Script
+# Version: 2.0
 # Compatible with: Ubuntu 22.04 LTS
+# Description: Complete VPN-based Hotspot Management Solution
 # =============================================================================
 
 set -e  # Exit on any error
@@ -21,6 +22,9 @@ SYSTEM_DIR="/opt/mikrotik-vpn"
 LOG_DIR="/var/log/mikrotik-vpn"
 BACKUP_DIR="/opt/mikrotik-vpn/backups"
 SCRIPT_DIR="/opt/mikrotik-vpn/scripts"
+
+# Create initial directories
+mkdir -p $SYSTEM_DIR $LOG_DIR $BACKUP_DIR $SCRIPT_DIR
 
 # Logging function
 log() {
@@ -113,18 +117,13 @@ phase1_system_preparation() {
     log "PHASE 1: SYSTEM PREPARATION"
     log "==================================================================="
     
-    # Create initial directories and setup logging
-    mkdir -p $LOG_DIR
-    mkdir -p $SYSTEM_DIR
-    mkdir -p $SCRIPT_DIR
-    
     log "Updating system packages..."
     apt update && apt upgrade -y
     
     log "Setting timezone to $TIMEZONE..."
     timedatectl set-timezone $TIMEZONE
     
-    # Install essential packages
+    log "Installing essential packages..."
     apt install -y \
         curl \
         wget \
@@ -159,7 +158,13 @@ phase1_system_preparation() {
         logrotate \
         rsync \
         screen \
-        tmux
+        tmux \
+        aide \
+        aide-common \
+        clamav \
+        clamav-daemon \
+        clamav-freshclam \
+        rkhunter
     
     log "Creating system directories..."
     mkdir -p $SYSTEM_DIR/{data,logs,backups,configs,ssl,scripts,clients}
@@ -168,9 +173,9 @@ phase1_system_preparation() {
     mkdir -p $SYSTEM_DIR/openvpn/{server,client-configs,easy-rsa}
     mkdir -p $BACKUP_DIR/{daily,weekly,monthly}
     
-    # Create system user for application with proper home directory
+    # Create system user for application
     if ! id "mikrotik-vpn" &>/dev/null; then
-        useradd -r -m -s /bin/bash -d /opt/mikrotik-vpn mikrotik-vpn
+        useradd -r -m -s /bin/bash -d $SYSTEM_DIR mikrotik-vpn
         log "Created mikrotik-vpn system user"
     else
         log "mikrotik-vpn user already exists"
@@ -178,7 +183,7 @@ phase1_system_preparation() {
     
     chown -R mikrotik-vpn:mikrotik-vpn $SYSTEM_DIR
     
-    log "Setting up system limits and optimizations..."
+    log "Setting up system optimizations..."
     create_system_optimizations
     
     log "Phase 1 completed successfully!"
@@ -518,7 +523,14 @@ if [ -z "$CLIENT_NAME" ]; then
 fi
 
 SYSTEM_DIR="/opt/mikrotik-vpn"
-DOMAIN_NAME="$(grep DOMAIN_NAME /opt/mikrotik-vpn/configs/setup.env | cut -d'=' -f2)"
+
+# Load domain from config
+if [ -f "$SYSTEM_DIR/configs/setup.env" ]; then
+    source $SYSTEM_DIR/configs/setup.env
+else
+    echo "Configuration file not found"
+    exit 1
+fi
 
 cd $SYSTEM_DIR/openvpn/easy-rsa
 
@@ -625,21 +637,7 @@ db.createCollection('organizations', {
   }
 });
 
-db.createCollection('sites', {
-  validator: {
-    \$jsonSchema: {
-      bsonType: "object",
-      required: ["organization_id", "name", "location"],
-      properties: {
-        organization_id: { bsonType: "objectId" },
-        name: { bsonType: "string" },
-        location: { bsonType: "string" },
-        vpn_ip: { bsonType: "string" }
-      }
-    }
-  }
-});
-
+db.createCollection('sites');
 db.createCollection('devices');
 db.createCollection('users');
 db.createCollection('vouchers');
@@ -647,7 +645,6 @@ db.createCollection('sessions');
 db.createCollection('logs');
 db.createCollection('configurations');
 db.createCollection('payments');
-db.createCollection('marketing_campaigns');
 
 // Create indexes for performance
 db.organizations.createIndex({ "domain": 1 }, { unique: true });
@@ -663,33 +660,18 @@ db.devices.createIndex({ "status": 1 });
 
 db.users.createIndex({ "username": 1 }, { unique: true });
 db.users.createIndex({ "email": 1 }, { unique: true, sparse: true });
-db.users.createIndex({ "organization_id": 1 });
-db.users.createIndex({ "site_id": 1 });
 
 db.vouchers.createIndex({ "code": 1 }, { unique: true });
-db.vouchers.createIndex({ "organization_id": 1 });
-db.vouchers.createIndex({ "site_id": 1 });
 db.vouchers.createIndex({ "status": 1 });
 db.vouchers.createIndex({ "created_at": -1 });
 
 db.sessions.createIndex({ "user_id": 1 });
 db.sessions.createIndex({ "device_id": 1 });
 db.sessions.createIndex({ "start_time": -1 });
-db.sessions.createIndex({ "organization_id": 1 });
 
 db.logs.createIndex({ "timestamp": -1 });
 db.logs.createIndex({ "level": 1 });
-db.logs.createIndex({ "organization_id": 1 });
 db.logs.createIndex({ "device_id": 1 });
-
-db.payments.createIndex({ "organization_id": 1 });
-db.payments.createIndex({ "transaction_id": 1 }, { unique: true });
-db.payments.createIndex({ "status": 1 });
-db.payments.createIndex({ "created_at": -1 });
-
-db.marketing_campaigns.createIndex({ "organization_id": 1 });
-db.marketing_campaigns.createIndex({ "site_id": 1 });
-db.marketing_campaigns.createIndex({ "status": 1 });
 EOF
     
     # Create MongoDB Docker Compose
@@ -850,6 +832,14 @@ BACKUP_DIR="$SYSTEM_DIR/backups"
 DATE=$(date +%Y%m%d_%H%M%S)
 LOG_FILE="/var/log/mikrotik-vpn/backup.log"
 
+# Load environment variables
+if [ -f "$SYSTEM_DIR/configs/setup.env" ]; then
+    source $SYSTEM_DIR/configs/setup.env
+else
+    echo "Configuration file not found"
+    exit 1
+fi
+
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a $LOG_FILE
 }
@@ -929,11 +919,7 @@ http {
                     '\$status \$body_bytes_sent "\$http_referer" '
                     '"\$http_user_agent" "\$http_x_forwarded_for"';
     
-    log_format detailed '\$remote_addr - \$remote_user [\$time_local] "\$request" '
-                       '\$status \$body_bytes_sent "\$http_referer" '
-                       '"\$http_user_agent" \$request_time \$upstream_response_time';
-    
-    access_log /var/log/nginx/access.log detailed;
+    access_log /var/log/nginx/access.log main;
 
     # Performance optimizations
     sendfile on;
@@ -942,7 +928,6 @@ http {
     keepalive_timeout 65;
     types_hash_max_size 2048;
     client_max_body_size 100M;
-    client_body_buffer_size 128k;
 
     # Security headers
     server_tokens off;
@@ -950,7 +935,6 @@ http {
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;
     add_header Referrer-Policy "no-referrer-when-downgrade" always;
-    add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline' 'unsafe-eval'" always;
 
     # Gzip compression
     gzip on;
@@ -965,21 +949,12 @@ http {
         application/json
         application/javascript
         application/xml+rss
-        application/rss+xml
         application/atom+xml
         image/svg+xml;
 
     # Rate limiting zones
     limit_req_zone \$binary_remote_addr zone=general:10m rate=10r/s;
     limit_req_zone \$binary_remote_addr zone=api:10m rate=100r/s;
-    limit_req_zone \$binary_remote_addr zone=login:10m rate=5r/s;
-
-    # Upstream definitions
-    upstream app_backend {
-        least_conn;
-        server app:3000 max_fails=3 fail_timeout=30s;
-        keepalive 32;
-    }
 
     # Include site configurations
     include /etc/nginx/conf.d/*.conf;
@@ -1021,7 +996,7 @@ server {
 
     # Modern SSL configuration
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
     ssl_prefer_server_ciphers off;
 
     # HSTS
@@ -1031,7 +1006,7 @@ server {
     location / {
         limit_req zone=general burst=20 nodelay;
         
-        proxy_pass http://app_backend;
+        proxy_pass http://app:3000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -1045,19 +1020,13 @@ server {
         proxy_connect_timeout 60s;
         proxy_send_timeout 60s;
         proxy_read_timeout 60s;
-        
-        # Buffer settings
-        proxy_buffering on;
-        proxy_buffer_size 128k;
-        proxy_buffers 4 256k;
-        proxy_busy_buffers_size 256k;
     }
 
-    # API endpoints with enhanced rate limiting
+    # API endpoints with rate limiting
     location /api/ {
         limit_req zone=api burst=50 nodelay;
         
-        proxy_pass http://app_backend;
+        proxy_pass http://app:3000;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -1065,21 +1034,9 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
-    # Authentication endpoints with strict rate limiting
-    location ~ ^/(login|register|forgot-password) {
-        limit_req zone=login burst=5 nodelay;
-        
-        proxy_pass http://app_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-
-    # WebSocket support for real-time features
+    # WebSocket support
     location /ws {
-        proxy_pass http://app_backend;
+        proxy_pass http://app:3000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "Upgrade";
@@ -1087,54 +1044,29 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
-        
-        # WebSocket timeouts
-        proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
     }
 
-    # Static files with caching
+    # Static files
     location /static/ {
         alias /var/www/static/;
         expires 30d;
         add_header Cache-Control "public, immutable";
-        add_header Vary Accept-Encoding;
-        
-        # Security for static files
-        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg)$ {
-            expires 1y;
-            add_header Cache-Control "public, immutable";
-        }
     }
 
-    # Block access to sensitive files
-    location ~ /\.(ht|git|svn) {
-        deny all;
-        return 404;
-    }
-
-    # Health check endpoint
+    # Health check
     location /health {
         access_log off;
-        proxy_pass http://app_backend/health;
-        proxy_set_header Host \$host;
-    }
-
-    # Error pages
-    error_page 404 /404.html;
-    error_page 500 502 503 504 /50x.html;
-    location = /50x.html {
-        root /var/www/html;
+        proxy_pass http://app:3000/health;
     }
 }
 
-# Admin panel (separate subdomain or path)
+# Admin panel
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
     server_name admin.$DOMAIN_NAME;
 
-    # SSL configuration (same as main site)
+    # SSL configuration (same as main)
     ssl_certificate /etc/nginx/ssl/fullchain.pem;
     ssl_certificate_key /etc/nginx/ssl/privkey.pem;
     ssl_session_timeout 1d;
@@ -1147,45 +1079,17 @@ server {
     # Enhanced security for admin
     add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
     add_header X-Frame-Options "DENY" always;
-    add_header X-Content-Type-Options "nosniff" always;
 
     # Admin interface
     location / {
         limit_req zone=general burst=10 nodelay;
         
-        proxy_pass http://app_backend/admin;
+        proxy_pass http://app:3000/admin;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
-
-    # Create monitoring endpoints configuration
-    cat << EOF > $SYSTEM_DIR/nginx/conf.d/monitoring.conf
-# Monitoring endpoints (internal access only)
-server {
-    listen 127.0.0.1:8080;
-    server_name localhost;
-
-    # Nginx status
-    location /nginx_status {
-        stub_status on;
-        access_log off;
-        allow 127.0.0.1;
-        allow 172.20.0.0/16;
-        deny all;
-    }
-
-    # Prometheus metrics
-    location /metrics {
-        proxy_pass http://app_backend/metrics;
-        access_log off;
-        allow 127.0.0.1;
-        allow 172.20.0.0/16;
-        deny all;
     }
 }
 EOF
@@ -1202,7 +1106,6 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "127.0.0.1:8080:8080"
     volumes:
       - $SYSTEM_DIR/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - $SYSTEM_DIR/nginx/conf.d:/etc/nginx/conf.d:ro
@@ -1210,7 +1113,6 @@ services:
       - $SYSTEM_DIR/nginx/html:/var/www/html:ro
       - $SYSTEM_DIR/nginx/logs:/var/log/nginx
       - certbot_www:/var/www/certbot:ro
-      - /etc/localtime:/etc/localtime:ro
     networks:
       - mikrotik-vpn-net
     healthcheck:
@@ -1219,19 +1121,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-
-  nginx-exporter:
-    image: nginx/nginx-prometheus-exporter:latest
-    container_name: mikrotik-nginx-exporter
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:9113:9113"
-    command:
-      - '-nginx.scrape-uri=http://nginx:8080/nginx_status'
-    networks:
-      - mikrotik-vpn-net
     depends_on:
-      - nginx
+      - app
 
 volumes:
   certbot_www:
@@ -1260,24 +1151,6 @@ EOF
 </body>
 </html>
 EOF
-
-    cat << EOF > $SYSTEM_DIR/nginx/html/404.html
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Page Not Found</title>
-    <style>
-        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
-        .error { color: #e74c3c; }
-    </style>
-</head>
-<body>
-    <h1 class="error">404 - Page Not Found</h1>
-    <p>The page you are looking for could not be found.</p>
-    <p><a href="/">Return to Home</a></p>
-</body>
-</html>
-EOF
 }
 
 setup_ssl_certificates() {
@@ -1295,16 +1168,6 @@ services:
       - $SYSTEM_DIR/nginx/ssl:/etc/letsencrypt
       - certbot_www:/var/www/certbot
     command: certonly --webroot --webroot-path=/var/www/certbot --email $ADMIN_EMAIL --agree-tos --no-eff-email -d $DOMAIN_NAME -d admin.$DOMAIN_NAME
-    networks:
-      - mikrotik-vpn-net
-
-  certbot-renew:
-    image: certbot/certbot
-    container_name: mikrotik-certbot-renew
-    volumes:
-      - $SYSTEM_DIR/nginx/ssl:/etc/letsencrypt
-      - certbot_www:/var/www/certbot
-    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot --webroot-path=/var/www/certbot; sleep 12h & wait \$\${!}; done;'"
     networks:
       - mikrotik-vpn-net
 
@@ -1379,23 +1242,13 @@ phase6_application_setup() {
     log "Creating application structure..."
     create_application_structure
     
-    log "Setting up application configuration..."
-    setup_application_config
-    
     log "Phase 6 completed successfully!"
 }
 
 install_nodejs() {
-    # Install Node.js 20 LTS (latest LTS)
+    # Install Node.js 20 LTS
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
     apt-get install -y nodejs
-    
-    # Verify Node.js version
-    node_version=$(node --version)
-    if [[ ! $node_version =~ ^v20 ]]; then
-        log_error "Node.js 20 LTS installation failed. Current version: $node_version"
-        exit 1
-    fi
     
     # Install PM2 for process management
     npm install -g pm2@latest
@@ -1408,10 +1261,7 @@ install_nodejs() {
 
 create_application_structure() {
     # Create application directory structure
-    mkdir -p $SYSTEM_DIR/app/{src,config,public,views,routes,models,controllers,middleware,utils,tests}
-    mkdir -p $SYSTEM_DIR/app/src/{api,web,services,jobs}
-    mkdir -p $SYSTEM_DIR/app/public/{css,js,images,fonts}
-    mkdir -p $SYSTEM_DIR/app/views/{layouts,partials,pages}
+    mkdir -p $SYSTEM_DIR/app/{src,config,public,views,routes,models,controllers,middleware,utils}
     
     # Create package.json
     cat << EOF > $SYSTEM_DIR/app/package.json
@@ -1422,81 +1272,24 @@ create_application_structure() {
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
-    "test": "jest",
-    "lint": "eslint .",
-    "build": "npm run build:css && npm run build:js",
-    "build:css": "tailwindcss -i ./public/css/input.css -o ./public/css/output.css --watch",
-    "build:js": "webpack --mode production"
+    "dev": "nodemon server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
     "express-session": "^1.17.3",
-    "express-rate-limit": "^6.7.0",
     "helmet": "^6.1.5",
     "cors": "^2.8.5",
-    "compression": "^1.7.4",
-    "morgan": "^1.10.0",
     "mongoose": "^7.0.3",
     "redis": "^4.6.5",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.0",
-    "passport": "^0.6.0",
-    "passport-local": "^1.0.0",
-    "passport-google-oauth20": "^2.0.0",
-    "passport-facebook": "^3.0.0",
-    "multer": "^1.4.5-lts.1",
-    "joi": "^17.9.1",
     "dotenv": "^16.0.3",
-    "nodemailer": "^6.9.1",
-    "twilio": "^4.10.0",
-    "qrcode": "^1.5.3",
-    "pdf-lib": "^1.17.1",
-    "sharp": "^0.32.1",
-    "socket.io": "^4.6.1",
-    "ws": "^8.13.0",
-    "node-cron": "^3.0.2",
-    "moment": "^2.29.4",
-    "moment-timezone": "^0.5.43",
-    "lodash": "^4.17.21",
-    "axios": "^1.4.0",
-    "cheerio": "^1.0.0-rc.12",
-    "handlebars": "^4.7.7",
-    "express-handlebars": "^7.0.7",
-    "i18next": "^22.4.15",
-    "i18next-fs-backend": "^2.1.1",
-    "i18next-http-middleware": "^3.3.0",
     "winston": "^3.8.2",
-    "winston-daily-rotate-file": "^4.7.1",
-    "prom-client": "^14.2.0"
-  },
-  "devDependencies": {
-    "nodemon": "^2.0.22",
-    "jest": "^29.5.0",
-    "supertest": "^6.3.3",
-    "eslint": "^8.39.0",
-    "prettier": "^2.8.8",
-    "tailwindcss": "^3.3.2",
-    "autoprefixer": "^10.4.14",
-    "postcss": "^8.4.23",
-    "webpack": "^5.82.1",
-    "webpack-cli": "^5.1.1"
+    "socket.io": "^4.6.1"
   },
   "engines": {
-    "node": ">=20.0.0",
-    "npm": ">=9.0.0"
-  },
-  "keywords": [
-    "mikrotik",
-    "vpn",
-    "hotspot",
-    "management",
-    "nodejs",
-    "express",
-    "mongodb"
-  ],
-  "author": "MikroTik VPN Management System",
-  "license": "MIT"
+    "node": ">=20.0.0"
+  }
 }
 EOF
 
@@ -1506,21 +1299,11 @@ const express = require('express');
 const mongoose = require('mongoose');
 const redis = require('redis');
 const session = require('express-session');
-const RedisStore = require('connect-redis')(session);
 const helmet = require('helmet');
 const cors = require('cors');
-const compression = require('compression');
-const morgan = require('morgan');
-const rateLimit = require('express-rate-limit');
-const path = require('path');
-const handlebars = require('express-handlebars');
-const i18next = require('i18next');
-const i18nextBackend = require('i18next-fs-backend');
-const i18nextMiddleware = require('i18next-http-middleware');
 const winston = require('winston');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
-const client = require('prom-client');
 
 // Load environment variables
 require('dotenv').config();
@@ -1529,10 +1312,6 @@ require('dotenv').config();
 const app = express();
 const server = createServer(app);
 const io = new Server(server);
-
-// Prometheus metrics
-const collectDefaultMetrics = client.collectDefaultMetrics;
-collectDefaultMetrics();
 
 // Configure logger
 const logger = winston.createLogger({
@@ -1544,36 +1323,18 @@ const logger = winston.createLogger({
   ),
   defaultMeta: { service: 'mikrotik-vpn' },
   transports: [
-    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'logs/combined.log' }),
+    new winston.transports.File({ filename: '/var/log/mikrotik-vpn/error.log', level: 'error' }),
+    new winston.transports.File({ filename: '/var/log/mikrotik-vpn/app.log' }),
     new winston.transports.Console({
       format: winston.format.simple()
     })
   ]
 });
 
-// Initialize i18n
-i18next
-  .use(i18nextBackend)
-  .use(i18nextMiddleware.LanguageDetector)
-  .init({
-    fallbackLng: 'en',
-    backend: {
-      loadPath: path.join(__dirname, 'locales/{{lng}}/{{ns}}.json')
-    },
-    detection: {
-      order: ['querystring', 'cookie', 'header'],
-      caches: ['cookie']
-    }
-  });
-
 // Database connections
 const connectMongoDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
+    await mongoose.connect(process.env.MONGODB_URI);
     logger.info('Connected to MongoDB');
   } catch (error) {
     logger.error('MongoDB connection error:', error);
@@ -1598,78 +1359,23 @@ const connectRedis = async () => {
 };
 
 // Middleware setup
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.tailwindcss.com"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", "data:", "https:"],
-    },
-  },
-}));
-
-app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS?.split(',') || 'http://localhost:3000',
-  credentials: true
-}));
-
-app.use(compression());
-app.use(morgan('combined', { stream: { write: message => logger.info(message.trim()) } }));
-
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again later.'
-});
-app.use(limiter);
-
-// Body parsing
+app.use(helmet());
+app.use(cors());
 app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
 
-// Static files
-app.use(express.static(path.join(__dirname, 'public')));
-
-// View engine setup
-app.engine('hbs', handlebars({
-  extname: 'hbs',
-  defaultLayout: 'main',
-  layoutsDir: path.join(__dirname, 'views/layouts'),
-  partialsDir: path.join(__dirname, 'views/partials'),
-  helpers: {
-    eq: (a, b) => a === b,
-    ne: (a, b) => a !== b,
-    gt: (a, b) => a > b,
-    lt: (a, b) => a < b,
-    formatDate: (date) => new Date(date).toLocaleDateString(),
-    json: (obj) => JSON.stringify(obj)
-  }
-}));
-app.set('view engine', 'hbs');
-app.set('views', path.join(__dirname, 'views'));
-
-// i18n middleware
-app.use(i18nextMiddleware.handle(i18next));
-
-// Session setup (will be configured after Redis connection)
-let redisClient;
-
-// Routes
+// Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'OK',
     timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    version: process.env.npm_package_version || '2.0.0'
+    uptime: process.uptime()
   });
 });
 
-// Metrics endpoint for Prometheus
-app.get('/metrics', (req, res) => {
-  res.set('Content-Type', client.register.contentType);
-  res.end(client.register.metrics());
+// Basic routes
+app.get('/', (req, res) => {
+  res.json({ message: 'MikroTik VPN Management System API' });
 });
 
 // Error handling middleware
@@ -1679,11 +1385,6 @@ app.use((err, req, res, next) => {
     error: 'Internal Server Error',
     message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong!'
   });
-});
-
-// 404 handler
-app.use((req, res) => {
-  res.status(404).render('404', { title: 'Page Not Found' });
 });
 
 // Socket.IO for real-time features
@@ -1700,7 +1401,6 @@ process.on('SIGTERM', async () => {
   logger.info('SIGTERM received, shutting down gracefully');
   server.close(() => {
     mongoose.connection.close();
-    if (redisClient) redisClient.quit();
     process.exit(0);
   });
 });
@@ -1709,20 +1409,7 @@ process.on('SIGTERM', async () => {
 const startServer = async () => {
   try {
     await connectMongoDB();
-    redisClient = await connectRedis();
-    
-    // Configure session with Redis store
-    app.use(session({
-      store: new RedisStore({ client: redisClient }),
-      secret: process.env.SESSION_SECRET,
-      resave: false,
-      saveUninitialized: false,
-      cookie: {
-        secure: process.env.NODE_ENV === 'production',
-        httpOnly: true,
-        maxAge: 24 * 60 * 60 * 1000 // 24 hours
-      }
-    }));
+    await connectRedis();
     
     const PORT = process.env.PORT || 3000;
     server.listen(PORT, () => {
@@ -1737,13 +1424,11 @@ const startServer = async () => {
 startServer();
 EOF
 
-    # Create environment configuration template
-    cat << EOF > $SYSTEM_DIR/app/.env.example
+    # Create environment configuration
+    cat << EOF > $SYSTEM_DIR/app/.env
 # Application Configuration
 NODE_ENV=production
 PORT=3000
-APP_NAME=MikroTik VPN Management System
-APP_URL=https://$DOMAIN_NAME
 
 # Database Configuration
 MONGODB_URI=mongodb://mikrotik_app:$MONGO_APP_PASSWORD@mongodb:27017/mikrotik_vpn
@@ -1756,114 +1441,19 @@ SESSION_SECRET=$(openssl rand -base64 32)
 
 # JWT Configuration
 JWT_SECRET=$(openssl rand -base64 64)
-JWT_EXPIRES_IN=24h
 
 # Email Configuration
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=$ADMIN_EMAIL
-SMTP_PASS=your_app_password_here
 FROM_EMAIL=$ADMIN_EMAIL
-FROM_NAME=MikroTik VPN System
-
-# SMS Configuration (Twilio)
-TWILIO_ACCOUNT_SID=your_twilio_sid
-TWILIO_AUTH_TOKEN=your_twilio_token
-TWILIO_PHONE_NUMBER=your_twilio_phone
-
-# OAuth Configuration
-GOOGLE_CLIENT_ID=your_google_client_id
-GOOGLE_CLIENT_SECRET=your_google_client_secret
-FACEBOOK_APP_ID=your_facebook_app_id
-FACEBOOK_APP_SECRET=your_facebook_app_secret
-
-# Line Notify
-LINE_NOTIFY_TOKEN=your_line_notify_token
-
-# Payment Gateway
-PROMPTPAY_TOKEN=your_promptpay_token
-STRIPE_SECRET_KEY=your_stripe_secret_key
-STRIPE_PUBLISHABLE_KEY=your_stripe_publishable_key
 
 # VPN Configuration
 VPN_NETWORK=$VPN_NETWORK
 OPENVPN_HOST=$DOMAIN_NAME
-OPENVPN_PORT=1194
-
-# Security
-ALLOWED_ORIGINS=https://$DOMAIN_NAME,https://admin.$DOMAIN_NAME
-BCRYPT_ROUNDS=12
 
 # Logging
 LOG_LEVEL=info
-LOG_DIR=/var/log/mikrotik-vpn
-
-# Rate Limiting
-RATE_LIMIT_WINDOW=900000
-RATE_LIMIT_MAX=100
-API_RATE_LIMIT_MAX=1000
-LOGIN_RATE_LIMIT_MAX=5
-
-# File Upload
-MAX_FILE_SIZE=10485760
-ALLOWED_FILE_TYPES=jpg,jpeg,png,gif,pdf,doc,docx
-
-# Monitoring
-PROMETHEUS_PORT=9090
-GRAFANA_PORT=3001
-EOF
-
-    # Copy to actual .env file
-    cp $SYSTEM_DIR/app/.env.example $SYSTEM_DIR/app/.env
-
-    # Create Dockerfile
-    cat << EOF > $SYSTEM_DIR/app/Dockerfile
-FROM node:20-alpine
-
-# Install system dependencies including Python for native modules
-RUN apk add --no-cache \
-    curl \
-    bash \
-    git \
-    python3 \
-    py3-pip \
-    make \
-    g++ \
-    linux-headers \
-    libc6-compat
-
-# Create app directory
-WORKDIR /usr/src/app
-
-# Copy package files
-COPY package*.json ./
-
-# Install dependencies
-RUN npm ci --only=production && npm cache clean --force
-
-# Copy application files
-COPY . .
-
-# Create non-root user
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S mikrotik -u 1001
-
-# Create necessary directories
-RUN mkdir -p logs uploads public/css public/js && \
-    chown -R mikrotik:nodejs /usr/src/app
-
-# Switch to non-root user
-USER mikrotik
-
-# Expose port
-EXPOSE 3000
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:3000/health || exit 1
-
-# Start application
-CMD ["npm", "start"]
 EOF
 
     # Create application Docker Compose
@@ -1885,8 +1475,6 @@ services:
     volumes:
       - $SYSTEM_DIR/app:/usr/src/app
       - $LOG_DIR:/var/log/mikrotik-vpn
-      - $SYSTEM_DIR/uploads:/usr/src/app/uploads
-      - /etc/localtime:/etc/localtime:ro
     networks:
       - mikrotik-vpn-net
     depends_on:
@@ -1904,337 +1492,48 @@ networks:
     external: true
 EOF
 
+    # Create Dockerfile
+    cat << EOF > $SYSTEM_DIR/app/Dockerfile
+FROM node:20-alpine
+
+# Install system dependencies
+RUN apk add --no-cache curl bash
+
+# Create app directory
+WORKDIR /usr/src/app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci --only=production
+
+# Copy application files
+COPY . .
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S mikrotik -u 1001
+
+# Create necessary directories
+RUN mkdir -p logs && \
+    chown -R mikrotik:nodejs /usr/src/app
+
+# Switch to non-root user
+USER mikrotik
+
+# Expose port
+EXPOSE 3000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:3000/health || exit 1
+
+# Start application
+CMD ["npm", "start"]
+EOF
+
     chown -R mikrotik-vpn:mikrotik-vpn $SYSTEM_DIR/app
-}
-
-setup_application_config() {
-    # Create localization files
-    mkdir -p $SYSTEM_DIR/app/locales/{en,th}/
-
-    # English translations
-    cat << EOF > $SYSTEM_DIR/app/locales/en/common.json
-{
-  "app": {
-    "name": "MikroTik VPN Management System",
-    "description": "Centralized VPN-based Hotspot Management",
-    "version": "2.0.0"
-  },
-  "nav": {
-    "dashboard": "Dashboard",
-    "devices": "Devices",
-    "users": "Users",
-    "vouchers": "Vouchers",
-    "reports": "Reports",
-    "settings": "Settings",
-    "logout": "Logout"
-  },
-  "auth": {
-    "login": "Login",
-    "logout": "Logout",
-    "register": "Register",
-    "forgot_password": "Forgot Password",
-    "reset_password": "Reset Password",
-    "email": "Email",
-    "password": "Password",
-    "confirm_password": "Confirm Password",
-    "remember_me": "Remember Me"
-  },
-  "dashboard": {
-    "title": "Dashboard",
-    "welcome": "Welcome to MikroTik VPN Management System",
-    "total_devices": "Total Devices",
-    "active_users": "Active Users",
-    "vpn_tunnels": "VPN Tunnels",
-    "revenue": "Revenue"
-  },
-  "common": {
-    "save": "Save",
-    "cancel": "Cancel",
-    "delete": "Delete",
-    "edit": "Edit",
-    "view": "View",
-    "search": "Search",
-    "filter": "Filter",
-    "loading": "Loading...",
-    "success": "Success",
-    "error": "Error",
-    "warning": "Warning",
-    "info": "Information"
-  }
-}
-EOF
-
-    # Thai translations
-    cat << EOF > $SYSTEM_DIR/app/locales/th/common.json
-{
-  "app": {
-    "name": "ระบบจัดการ MikroTik VPN",
-    "description": "ระบบจัดการ Hotspot แบบรวมศูนย์ผ่าน VPN",
-    "version": "2.0.0"
-  },
-  "nav": {
-    "dashboard": "หน้าหลัก",
-    "devices": "อุปกรณ์",
-    "users": "ผู้ใช้งาน",
-    "vouchers": "วาวเชอร์",
-    "reports": "รายงาน",
-    "settings": "ตั้งค่า",
-    "logout": "ออกจากระบบ"
-  },
-  "auth": {
-    "login": "เข้าสู่ระบบ",
-    "logout": "ออกจากระบบ",
-    "register": "สมัครสมาชิก",
-    "forgot_password": "ลืมรหัสผ่าน",
-    "reset_password": "รีเซ็ตรหัสผ่าน",
-    "email": "อีเมล",
-    "password": "รหัสผ่าน",
-    "confirm_password": "ยืนยันรหัสผ่าน",
-    "remember_me": "จดจำการเข้าสู่ระบบ"
-  },
-  "dashboard": {
-    "title": "หน้าหลัก",
-    "welcome": "ยินดีต้อนรับสู่ระบบจัดการ MikroTik VPN",
-    "total_devices": "อุปกรณ์ทั้งหมด",
-    "active_users": "ผู้ใช้งานออนไลน์",
-    "vpn_tunnels": "VPN Tunnels",
-    "revenue": "รายได้"
-  },
-  "common": {
-    "save": "บันทึก",
-    "cancel": "ยกเลิก",
-    "delete": "ลบ",
-    "edit": "แก้ไข",
-    "view": "ดู",
-    "search": "ค้นหา",
-    "filter": "กรอง",
-    "loading": "กำลังโหลด...",
-    "success": "สำเร็จ",
-    "error": "ข้อผิดพลาด",
-    "warning": "คำเตือน",
-    "info": "ข้อมูล"
-  }
-}
-EOF
-
-    # Create basic views
-    mkdir -p $SYSTEM_DIR/app/views/{layouts,partials,pages}
-
-    # Main layout
-    cat << 'EOF' > $SYSTEM_DIR/app/views/layouts/main.hbs
-<!DOCTYPE html>
-<html lang="{{lng}}" class="{{#if darkMode}}dark{{/if}}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{title}} - {{t 'app.name'}}</title>
-    
-    <!-- Meta tags -->
-    <meta name="description" content="{{t 'app.description'}}">
-    <meta name="author" content="MikroTik VPN Management System">
-    
-    <!-- Favicon -->
-    <link rel="icon" type="image/x-icon" href="/images/favicon.ico">
-    
-    <!-- CSS -->
-    <link href="https://cdn.tailwindcss.com/2.2.19/tailwind.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    
-    <!-- Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    
-    <style>
-        body { font-family: 'Inter', sans-serif; }
-    </style>
-</head>
-<body class="bg-gray-50 dark:bg-gray-900">
-    {{> header}}
-    
-    <div class="flex">
-        {{#if user}}
-            {{> sidebar}}
-        {{/if}}
-        
-        <main class="{{#if user}}ml-64{{/if}} flex-1 p-6">
-            {{> notifications}}
-            {{{body}}}
-        </main>
-    </div>
-    
-    {{> footer}}
-    
-    <!-- Scripts -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.js"></script>
-    <script>
-        // Basic JavaScript functionality
-        document.addEventListener('DOMContentLoaded', function() {
-            // Dark mode toggle
-            const darkModeToggle = document.getElementById('dark-mode-toggle');
-            if (darkModeToggle) {
-                darkModeToggle.addEventListener('click', function() {
-                    document.documentElement.classList.toggle('dark');
-                    localStorage.setItem('darkMode', document.documentElement.classList.contains('dark'));
-                });
-            }
-            
-            // Load saved dark mode preference
-            if (localStorage.getItem('darkMode') === 'true') {
-                document.documentElement.classList.add('dark');
-            }
-        });
-    </script>
-</body>
-</html>
-EOF
-
-    # Header partial
-    cat << 'EOF' > $SYSTEM_DIR/app/views/partials/header.hbs
-<header class="bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div class="flex justify-between items-center h-16">
-            <!-- Logo -->
-            <div class="flex items-center">
-                <div class="flex-shrink-0">
-                    <i class="fas fa-network-wired text-2xl text-blue-600"></i>
-                </div>
-                <div class="ml-3">
-                    <h1 class="text-lg font-semibold text-gray-900 dark:text-white">
-                        {{t 'app.name'}}
-                    </h1>
-                </div>
-            </div>
-            
-            {{#if user}}
-            <!-- User menu -->
-            <div class="flex items-center space-x-4">
-                <!-- Dark mode toggle -->
-                <button id="dark-mode-toggle" class="p-2 rounded-md text-gray-400 hover:text-gray-500">
-                    <i class="fas fa-moon"></i>
-                </button>
-                
-                <!-- Notifications -->
-                <button class="p-2 rounded-md text-gray-400 hover:text-gray-500 relative">
-                    <i class="fas fa-bell"></i>
-                    <span class="absolute top-0 right-0 h-2 w-2 bg-red-500 rounded-full"></span>
-                </button>
-                
-                <!-- User dropdown -->
-                <div class="relative">
-                    <button class="flex items-center space-x-2 text-sm text-gray-700 dark:text-gray-300">
-                        <div class="h-8 w-8 bg-blue-500 rounded-full flex items-center justify-center">
-                            <span class="text-white font-medium">{{substring user.name 0 1}}</span>
-                        </div>
-                        <span>{{user.name}}</span>
-                        <i class="fas fa-chevron-down"></i>
-                    </button>
-                </div>
-            </div>
-            {{/if}}
-        </div>
-    </div>
-</header>
-EOF
-
-    # Sidebar partial
-    cat << 'EOF' > $SYSTEM_DIR/app/views/partials/sidebar.hbs
-<aside class="fixed left-0 top-16 h-full w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 overflow-y-auto">
-    <nav class="p-4">
-        <ul class="space-y-2">
-            <li>
-                <a href="/dashboard" class="flex items-center space-x-3 px-3 py-2 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700">
-                    <i class="fas fa-tachometer-alt w-5"></i>
-                    <span>{{t 'nav.dashboard'}}</span>
-                </a>
-            </li>
-            <li>
-                <a href="/devices" class="flex items-center space-x-3 px-3 py-2 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700">
-                    <i class="fas fa-server w-5"></i>
-                    <span>{{t 'nav.devices'}}</span>
-                </a>
-            </li>
-            <li>
-                <a href="/users" class="flex items-center space-x-3 px-3 py-2 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700">
-                    <i class="fas fa-users w-5"></i>
-                    <span>{{t 'nav.users'}}</span>
-                </a>
-            </li>
-            <li>
-                <a href="/vouchers" class="flex items-center space-x-3 px-3 py-2 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700">
-                    <i class="fas fa-ticket-alt w-5"></i>
-                    <span>{{t 'nav.vouchers'}}</span>
-                </a>
-            </li>
-            <li>
-                <a href="/reports" class="flex items-center space-x-3 px-3 py-2 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700">
-                    <i class="fas fa-chart-bar w-5"></i>
-                    <span>{{t 'nav.reports'}}</span>
-                </a>
-            </li>
-            <li>
-                <a href="/settings" class="flex items-center space-x-3 px-3 py-2 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700">
-                    <i class="fas fa-cog w-5"></i>
-                    <span>{{t 'nav.settings'}}</span>
-                </a>
-            </li>
-        </ul>
-        
-        <!-- VPN Status -->
-        <div class="mt-8 p-4 bg-blue-50 dark:bg-blue-900 rounded-lg">
-            <h3 class="text-sm font-medium text-blue-800 dark:text-blue-200">VPN Status</h3>
-            <div class="mt-2 space-y-2">
-                <div class="flex items-center justify-between">
-                    <span class="text-xs text-gray-600 dark:text-gray-400">Active Tunnels</span>
-                    <span class="text-xs font-medium text-green-600">5</span>
-                </div>
-                <div class="flex items-center justify-between">
-                    <span class="text-xs text-gray-600 dark:text-gray-400">Connected Devices</span>
-                    <span class="text-xs font-medium text-blue-600">12</span>
-                </div>
-            </div>
-        </div>
-    </nav>
-</aside>
-EOF
-
-    # Notifications partial
-    cat << 'EOF' > $SYSTEM_DIR/app/views/partials/notifications.hbs
-{{#if notifications}}
-<div class="mb-4">
-  {{#each notifications}}
-  <div class="mb-2 p-4 rounded-md {{#if (eq type 'success')}}bg-green-50 text-green-800{{else if (eq type 'error')}}bg-red-50 text-red-800{{else if (eq type 'warning')}}bg-yellow-50 text-yellow-800{{else}}bg-blue-50 text-blue-800{{/if}}">
-    <div class="flex">
-      <div class="flex-shrink-0">
-        <i class="fas {{#if (eq type 'success')}}fa-check-circle{{else if (eq type 'error')}}fa-exclamation-circle{{else if (eq type 'warning')}}fa-exclamation-triangle{{else}}fa-info-circle{{/if}}"></i>
-      </div>
-      <div class="ml-3">
-        <p class="text-sm font-medium">{{message}}</p>
-      </div>
-    </div>
-  </div>
-  {{/each}}
-</div>
-{{/if}}
-EOF
-
-    # Footer partial
-    cat << 'EOF' > $SYSTEM_DIR/app/views/partials/footer.hbs
-<footer class="bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 mt-auto">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-        <div class="flex justify-between items-center">
-            <div class="text-sm text-gray-500 dark:text-gray-400">
-                © 2024 MikroTik VPN Management System v2.0
-            </div>
-            <div class="flex space-x-4 text-sm text-gray-500 dark:text-gray-400">
-                <a href="/docs" class="hover:text-gray-700 dark:hover:text-gray-300">Documentation</a>
-                <a href="/support" class="hover:text-gray-700 dark:hover:text-gray-300">Support</a>
-                <a href="/about" class="hover:text-gray-700 dark:hover:text-gray-300">About</a>
-            </div>
-        </div>
-    </div>
-</footer>
-EOF
 }
 
 # =============================================================================
@@ -2256,164 +1555,33 @@ phase7_monitoring_setup() {
 }
 
 setup_prometheus() {
-    mkdir -p $SYSTEM_DIR/monitoring/{prometheus,grafana,alertmanager}
-    mkdir -p $SYSTEM_DIR/monitoring/prometheus/rules
+    mkdir -p $SYSTEM_DIR/monitoring/{prometheus,grafana}
     
     # Prometheus configuration
     cat << EOF > $SYSTEM_DIR/monitoring/prometheus/prometheus.yml
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
-  external_labels:
-    monitor: 'mikrotik-vpn-monitor'
-    environment: 'production'
 
-# Alertmanager configuration
-alerting:
-  alertmanagers:
-    - static_configs:
-        - targets:
-            - alertmanager:9093
-
-# Load rules
-rule_files:
-  - '/etc/prometheus/rules/*.yml'
-
-# Scrape configurations
 scrape_configs:
-  # Prometheus itself
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
 
-  # Node Exporter (system metrics)
   - job_name: 'node'
     static_configs:
       - targets: ['node-exporter:9100']
-    scrape_interval: 30s
 
-  # Application metrics
   - job_name: 'mikrotik-app'
     static_configs:
       - targets: ['app:3000']
     metrics_path: '/metrics'
-    scrape_interval: 15s
-
-  # Docker containers
-  - job_name: 'docker'
-    static_configs:
-      - targets: ['cadvisor:8080']
-    scrape_interval: 30s
-
-  # Nginx metrics
-  - job_name: 'nginx'
-    static_configs:
-      - targets: ['nginx-exporter:9113']
-    scrape_interval: 30s
-EOF
-
-    # Alert rules
-    cat << EOF > $SYSTEM_DIR/monitoring/prometheus/rules/alerts.yml
-groups:
-  - name: system_alerts
-    interval: 30s
-    rules:
-      - alert: HighCPUUsage
-        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
-        for: 5m
-        labels:
-          severity: warning
-          component: system
-        annotations:
-          summary: "High CPU usage detected on {{ \$labels.instance }}"
-          description: "CPU usage is above 80% (current value: {{ \$value }}%)"
-
-      - alert: HighMemoryUsage
-        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
-        for: 5m
-        labels:
-          severity: warning
-          component: system
-        annotations:
-          summary: "High memory usage detected on {{ \$labels.instance }}"
-          description: "Memory usage is above 85% (current value: {{ \$value }}%)"
-
-      - alert: DiskSpaceLow
-        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 20
-        for: 5m
-        labels:
-          severity: critical
-          component: system
-        annotations:
-          summary: "Low disk space on {{ \$labels.instance }}"
-          description: "Disk space is below 20% (current value: {{ \$value }}%)"
-
-      - alert: ServiceDown
-        expr: up == 0
-        for: 1m
-        labels:
-          severity: critical
-          component: service
-        annotations:
-          summary: "Service {{ \$labels.job }} is down"
-          description: "{{ \$labels.job }} on {{ \$labels.instance }} has been down for more than 1 minute"
-EOF
-
-    # Alertmanager configuration
-    cat << EOF > $SYSTEM_DIR/monitoring/alertmanager/alertmanager.yml
-global:
-  resolve_timeout: 5m
-  smtp_smarthost: 'smtp.gmail.com:587'
-  smtp_from: '$ADMIN_EMAIL'
-  smtp_auth_username: '$ADMIN_EMAIL'
-  smtp_auth_password: 'your_app_password'
-
-# Route configuration
-route:
-  group_by: ['alertname', 'cluster', 'service']
-  group_wait: 10s
-  group_interval: 10s
-  repeat_interval: 12h
-  receiver: 'default'
-  routes:
-    - match:
-        severity: critical
-      receiver: 'critical-alerts'
-      group_wait: 0s
-      repeat_interval: 5m
-
-# Receivers
-receivers:
-  - name: 'default'
-    email_configs:
-      - to: '$ADMIN_EMAIL'
-        subject: '[MikroTik VPN] Alert: {{ .GroupLabels.alertname }}'
-        body: |
-          {{ range .Alerts }}
-          Alert: {{ .Annotations.summary }}
-          Description: {{ .Annotations.description }}
-          Labels: {{ range .Labels.SortedPairs }}{{ .Name }}={{ .Value }} {{ end }}
-          {{ end }}
-
-  - name: 'critical-alerts'
-    email_configs:
-      - to: '$ADMIN_EMAIL'
-        subject: '[CRITICAL] MikroTik VPN Alert: {{ .GroupLabels.alertname }}'
-        body: |
-          CRITICAL ALERT DETECTED!
-          
-          {{ range .Alerts }}
-          Alert: {{ .Annotations.summary }}
-          Description: {{ .Annotations.description }}
-          Time: {{ .StartsAt }}
-          Labels: {{ range .Labels.SortedPairs }}{{ .Name }}={{ .Value }} {{ end }}
-          {{ end }}
 EOF
 }
 
 setup_grafana() {
     # Grafana provisioning
-    mkdir -p $SYSTEM_DIR/monitoring/grafana/{provisioning/{datasources,dashboards},dashboards}
+    mkdir -p $SYSTEM_DIR/monitoring/grafana/provisioning/{datasources,dashboards}
 
     # Datasource configuration
     cat << EOF > $SYSTEM_DIR/monitoring/grafana/provisioning/datasources/prometheus.yml
@@ -2425,26 +1593,6 @@ datasources:
     access: proxy
     url: http://prometheus:9090
     isDefault: true
-    editable: true
-    jsonData:
-      timeInterval: 15s
-      queryTimeout: 60s
-EOF
-
-    # Dashboard provisioning
-    cat << EOF > $SYSTEM_DIR/monitoring/grafana/provisioning/dashboards/dashboard.yml
-apiVersion: 1
-
-providers:
-  - name: 'MikroTik VPN Dashboards'
-    orgId: 1
-    folder: ''
-    type: file
-    disableDeletion: false
-    updateIntervalSeconds: 10
-    allowUiUpdates: true
-    options:
-      path: /var/lib/grafana/dashboards
 EOF
 
     # Create monitoring Docker Compose
@@ -2459,10 +1607,7 @@ services:
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
       - '--web.enable-lifecycle'
-      - '--storage.tsdb.retention.time=30d'
     volumes:
       - $SYSTEM_DIR/monitoring/prometheus:/etc/prometheus
       - prometheus_data:/prometheus
@@ -2479,33 +1624,15 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=$MONGO_ROOT_PASSWORD
       - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
     volumes:
       - grafana_data:/var/lib/grafana
       - $SYSTEM_DIR/monitoring/grafana/provisioning:/etc/grafana/provisioning
-      - $SYSTEM_DIR/monitoring/grafana/dashboards:/var/lib/grafana/dashboards
     ports:
       - "127.0.0.1:3001:3000"
     networks:
       - mikrotik-vpn-net
     depends_on:
       - prometheus
-
-  alertmanager:
-    image: prom/alertmanager:latest
-    container_name: mikrotik-alertmanager
-    restart: unless-stopped
-    command:
-      - '--config.file=/etc/alertmanager/alertmanager.yml'
-      - '--storage.path=/alertmanager'
-      - '--web.external-url=http://localhost:9093'
-    volumes:
-      - $SYSTEM_DIR/monitoring/alertmanager:/etc/alertmanager
-      - alertmanager_data:/alertmanager
-    ports:
-      - "127.0.0.1:9093:9093"
-    networks:
-      - mikrotik-vpn-net
 
   node-exporter:
     image: prom/node-exporter:latest
@@ -2524,27 +1651,9 @@ services:
     networks:
       - mikrotik-vpn-net
 
-  cadvisor:
-    image: gcr.io/cadvisor/cadvisor:latest
-    container_name: mikrotik-cadvisor
-    restart: unless-stopped
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-      - /dev/disk/:/dev/disk:ro
-    devices:
-      - /dev/kmsg
-    ports:
-      - "127.0.0.1:8080:8080"
-    networks:
-      - mikrotik-vpn-net
-
 volumes:
   prometheus_data:
   grafana_data:
-  alertmanager_data:
 
 networks:
   mikrotik-vpn-net:
@@ -2612,15 +1721,12 @@ setup_fail2ban() {
     # Create custom jail configuration
     cat << EOF > /etc/fail2ban/jail.local
 [DEFAULT]
-# Ban settings
 bantime = 3600
 findtime = 600
 maxretry = 5
 destemail = $ADMIN_EMAIL
-sender = fail2ban@$DOMAIN_NAME
 action = %(action_mwl)s
 
-# SSH jail
 [sshd]
 enabled = true
 port = $SSH_PORT
@@ -2629,7 +1735,6 @@ logpath = /var/log/auth.log
 maxretry = 3
 bantime = 7200
 
-# Nginx jails
 [nginx-http-auth]
 enabled = true
 filter = nginx-http-auth
@@ -2642,17 +1747,7 @@ port = http,https
 filter = nginx-limit-req
 logpath = $LOG_DIR/nginx/error.log
 maxretry = 10
-findtime = 60
-bantime = 600
 
-[nginx-botsearch]
-enabled = true
-port = http,https
-filter = nginx-botsearch
-logpath = $LOG_DIR/nginx/access.log
-maxretry = 2
-
-# VPN jails
 [openvpn]
 enabled = true
 port = 1194
@@ -2662,13 +1757,12 @@ logpath = /var/log/openvpn.log
 maxretry = 3
 EOF
 
-    # Create custom filters
+    # Create OpenVPN filter
     cat << EOF > /etc/fail2ban/filter.d/openvpn.conf
 [Definition]
 failregex = ^.*<HOST>:[0-9]{4,5} TLS Auth Error.*$
             ^.*<HOST>:[0-9]{4,5} VERIFY ERROR.*$
             ^.*<HOST>:[0-9]{4,5} TLS Error: TLS handshake failed$
-            ^.*<HOST> TLS handshake failed$
 ignoreregex =
 EOF
 
@@ -2687,24 +1781,14 @@ harden_ssh() {
 Port $SSH_PORT
 Protocol 2
 
-# Host keys
-HostKey /etc/ssh/ssh_host_rsa_key
-HostKey /etc/ssh/ssh_host_ecdsa_key
-HostKey /etc/ssh/ssh_host_ed25519_key
-
-# Logging
-SyslogFacility AUTH
-LogLevel VERBOSE
-
 # Authentication
 LoginGraceTime 30
 PermitRootLogin no
 StrictModes yes
 MaxAuthTries 3
 MaxSessions 5
-MaxStartups 5:30:10
 
-# Password authentication (disable after setting up keys)
+# Password authentication
 PasswordAuthentication yes
 PermitEmptyPasswords no
 ChallengeResponseAuthentication no
@@ -2713,52 +1797,29 @@ ChallengeResponseAuthentication no
 PubkeyAuthentication yes
 AuthorizedKeysFile .ssh/authorized_keys
 
-# Disable problematic authentication methods
+# Disable problematic methods
 HostbasedAuthentication no
 IgnoreUserKnownHosts yes
 IgnoreRhosts yes
 UsePAM yes
 
-# X11 and tunneling
+# Security features
 X11Forwarding no
 AllowTcpForwarding no
 AllowAgentForwarding no
-GatewayPorts no
 PermitTunnel no
-
-# Misc security
 PrintMotd no
-PrintLastLog yes
 TCPKeepAlive yes
-Compression delayed
 ClientAliveInterval 300
 ClientAliveCountMax 2
 
 # User restrictions
 AllowUsers mikrotik-vpn $SUDO_USER
-DenyGroups games
-
-# Banner
-Banner /etc/issue.net
 
 # Modern cryptography
-Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
-MACs hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha2-256,hmac-sha2-512
-KexAlgorithms curve25519-sha256@libssh.org,ecdh-sha2-nistp521,ecdh-sha2-nistp384,ecdh-sha2-nistp256,diffie-hellman-group-exchange-sha256
-EOF
-
-    # Create SSH banner
-    cat << EOF > /etc/issue.net
-***************************************************************************
-                    AUTHORIZED ACCESS ONLY
-    
-This system is for authorized use only. All activities are logged and
-monitored. Unauthorized access attempts will be investigated and may
-result in prosecution. If you are not authorized to access this system,
-disconnect immediately.
-
-                 MikroTik VPN Management System
-***************************************************************************
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com
+MACs hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com
+KexAlgorithms curve25519-sha256@libssh.org,ecdh-sha2-nistp521,ecdh-sha2-nistp384,ecdh-sha2-nistp256
 EOF
 
     # Test SSH configuration
@@ -2768,7 +1829,7 @@ EOF
         systemctl restart sshd
         log "SSH hardening completed successfully"
     else
-        log_error "SSH configuration test failed. Please check the configuration."
+        log_error "SSH configuration test failed"
         exit 1
     fi
 }
@@ -2806,8 +1867,11 @@ RETENTION_MONTHLY=12
 LOG_FILE="/var/log/mikrotik-vpn/backup.log"
 
 # Load environment variables
-if [ -f /opt/mikrotik-vpn/app/.env ]; then
-    source /opt/mikrotik-vpn/app/.env
+if [ -f "/opt/mikrotik-vpn/configs/setup.env" ]; then
+    source /opt/mikrotik-vpn/configs/setup.env
+else
+    echo "Configuration file not found"
+    exit 1
 fi
 
 # Logging function
@@ -2836,24 +1900,20 @@ mkdir -p $BACKUP_PATH
 
 # 1. Database Backups
 log "Backing up MongoDB..."
-if docker ps | grep -q mikrotik-mongodb; then
-    docker exec mikrotik-mongodb mongodump \
-        --host localhost \
-        --username admin \
-        --password $MONGO_ROOT_PASSWORD \
-        --authenticationDatabase admin \
-        --out /tmp/mongodb-backup
+docker exec mikrotik-mongodb mongodump \
+    --host localhost \
+    --username admin \
+    --password $MONGO_ROOT_PASSWORD \
+    --authenticationDatabase admin \
+    --out /tmp/mongodb-backup
 
-    docker cp mikrotik-mongodb:/tmp/mongodb-backup $BACKUP_PATH/
-    docker exec mikrotik-mongodb rm -rf /tmp/mongodb-backup
-fi
+docker cp mikrotik-mongodb:/tmp/mongodb-backup $BACKUP_PATH/
+docker exec mikrotik-mongodb rm -rf /tmp/mongodb-backup
 
 log "Backing up Redis..."
-if docker ps | grep -q mikrotik-redis; then
-    docker exec mikrotik-redis redis-cli --pass $REDIS_PASSWORD BGSAVE
-    sleep 5
-    docker cp mikrotik-redis:/data/dump.rdb $BACKUP_PATH/redis_dump.rdb
-fi
+docker exec mikrotik-redis redis-cli --pass $REDIS_PASSWORD BGSAVE
+sleep 5
+docker cp mikrotik-redis:/data/dump.rdb $BACKUP_PATH/redis_dump.rdb
 
 # 2. Configuration Files
 log "Backing up configuration files..."
@@ -2872,37 +1932,21 @@ tar -czf $BACKUP_PATH/ssl.tar.gz /opt/mikrotik-vpn/nginx/ssl 2>/dev/null || true
 # 4. Application Data
 log "Backing up application data..."
 tar -czf $BACKUP_PATH/app_data.tar.gz \
-    /opt/mikrotik-vpn/app/uploads \
     /var/log/mikrotik-vpn \
     2>/dev/null || true
 
-# 5. System Information
-log "Collecting system information..."
-cat > $BACKUP_PATH/system_info.txt << EOL
-Backup Date: $(date)
-Hostname: $(hostname)
-OS Version: $(lsb_release -d | cut -f2)
-Kernel: $(uname -r)
-Docker Version: $(docker --version)
-Docker Compose Version: $(docker compose version)
-Disk Usage: $(df -h /)
-Memory: $(free -h)
-Running Containers: $(docker ps --format "table {{.Names}}\t{{.Status}}")
-UFW Status: $(ufw status)
-EOL
-
-# 6. Create checksums
+# 5. Create checksums
 log "Creating checksums..."
 cd $BACKUP_PATH
 find . -type f -exec sha256sum {} \; > checksums.sha256
 
-# 7. Compress entire backup
+# 6. Compress entire backup
 log "Compressing backup..."
 cd $BACKUP_DIR/$BACKUP_TYPE
 tar -czf backup_$DATE.tar.gz backup_$DATE/
 rm -rf backup_$DATE/
 
-# 8. Cleanup old backups
+# 7. Cleanup old backups
 log "Cleaning up old backups..."
 cleanup_backups() {
     local backup_type=$1
@@ -2915,7 +1959,7 @@ cleanup_backups "daily" $RETENTION_DAILY
 cleanup_backups "weekly" $((RETENTION_WEEKLY * 7))
 cleanup_backups "monthly" $((RETENTION_MONTHLY * 30))
 
-# 9. Verify backup integrity
+# 8. Verify backup integrity
 log "Verifying backup integrity..."
 if tar -tzf $BACKUP_DIR/$BACKUP_TYPE/backup_$DATE.tar.gz >/dev/null; then
     log "Backup verification successful"
@@ -2924,14 +1968,9 @@ else
     exit 1
 fi
 
+# 9. Send notification
 BACKUP_SIZE=$(du -h $BACKUP_DIR/$BACKUP_TYPE/backup_$DATE.tar.gz | cut -f1)
 log "Backup completed successfully. Size: $BACKUP_SIZE"
-
-# Send email notification if mail is available
-if command -v mail >/dev/null 2>&1; then
-    echo "Backup completed successfully on $(hostname) at $(date). Backup size: $BACKUP_SIZE" | \
-    mail -s "MikroTik VPN Backup Success - $BACKUP_TYPE" $ADMIN_EMAIL 2>/dev/null || true
-fi
 
 log "=== Backup Summary ==="
 log "Type: $BACKUP_TYPE"
@@ -3004,7 +2043,7 @@ restore_backup() {
     log "Verifying backup integrity..."
     cd $backup_dir
     if [ -f checksums.sha256 ]; then
-        if sha256sum -c checksums.sha256 --quiet 2>/dev/null; then
+        if sha256sum -c checksums.sha256 --quiet; then
             log "Backup integrity verified"
         else
             log "ERROR: Backup integrity check failed"
@@ -3019,7 +2058,327 @@ restore_backup() {
     cd /opt/mikrotik-vpn
     for compose_file in docker-compose-*.yml; do
         if [ -f "$compose_file" ]; then
-            docker compose -f docker-compose-monitoring.yml down 2>/dev/null || true
+            docker compose -f $compose_file down 2>/dev/null || true
+        fi
+    done
+    
+    # Restore databases
+    log "Restoring MongoDB..."
+    docker compose -f docker-compose-mongodb.yml up -d
+    sleep 15
+    
+    if [ -d "$backup_dir/mongodb-backup" ]; then
+        docker cp $backup_dir/mongodb-backup mikrotik-mongodb:/tmp/
+        docker exec mikrotik-mongodb mongorestore \
+            --host localhost \
+            --username admin \
+            --password $MONGO_ROOT_PASSWORD \
+            --authenticationDatabase admin \
+            --drop \
+            /tmp/mongodb-backup 2>/dev/null || true
+        docker exec mikrotik-mongodb rm -rf /tmp/mongodb-backup
+    fi
+    
+    log "Restoring Redis..."
+    docker compose -f docker-compose-redis.yml down
+    if [ -f "$backup_dir/redis_dump.rdb" ]; then
+        docker cp $backup_dir/redis_dump.rdb mikrotik-redis:/data/dump.rdb 2>/dev/null || true
+    fi
+    docker compose -f docker-compose-redis.yml up -d
+    
+    # Restore configuration files
+    log "Restoring configuration files..."
+    if [ -f "$backup_dir/configs.tar.gz" ]; then
+        cd /
+        tar -xzf $backup_dir/configs.tar.gz 2>/dev/null || true
+    fi
+    
+    # Restore SSL certificates
+    log "Restoring SSL certificates..."
+    if [ -f "$backup_dir/ssl.tar.gz" ]; then
+        cd /
+        tar -xzf $backup_dir/ssl.tar.gz 2>/dev/null || true
+    fi
+    
+    # Start all services
+    log "Starting all services..."
+    cd /opt/mikrotik-vpn
+    /opt/mikrotik-vpn/scripts/start-all-services.sh
+    
+    # Cleanup
+    rm -rf $temp_dir
+    
+    log "Restore completed successfully!"
+    log "Please verify all services are working correctly"
+}
+
+# Main menu
+main() {
+    if [ $# -eq 0 ]; then
+        echo "MikroTik VPN System Restore Utility"
+        echo "===================================="
+        echo "Usage: $0 [backup_file]"
+        echo ""
+        list_backups
+        echo ""
+        echo "Example: $0 /opt/mikrotik-vpn/backups/daily/backup_20240101_120000.tar.gz"
+        exit 0
+    fi
+    
+    restore_backup "$1"
+}
+
+main "$@"
+EOF
+
+    chmod +x $SCRIPT_DIR/restore-system.sh
+}
+
+setup_backup_automation() {
+    # Create cron jobs for automated backups
+    cat << EOF > /etc/cron.d/mikrotik-vpn-backup
+# MikroTik VPN System Backup Schedule
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# Daily backup at 2:00 AM
+0 2 * * * mikrotik-vpn /opt/mikrotik-vpn/scripts/backup-system.sh >> /var/log/mikrotik-vpn/backup-cron.log 2>&1
+
+# Weekly cleanup at 3:00 AM on Sundays
+0 3 * * 0 mikrotik-vpn /opt/mikrotik-vpn/scripts/cleanup-old-backups.sh >> /var/log/mikrotik-vpn/backup-cleanup.log 2>&1
+EOF
+
+    # Create cleanup script
+    cat << 'EOF' > $SCRIPT_DIR/cleanup-old-backups.sh
+#!/bin/bash
+# Old backup cleanup script
+
+BACKUP_DIR="/opt/mikrotik-vpn/backups"
+LOG_FILE="/var/log/mikrotik-vpn/backup-cleanup.log"
+
+# Retention periods (in days)
+DAILY_RETENTION=7
+WEEKLY_RETENTION=28
+MONTHLY_RETENTION=365
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a $LOG_FILE
+}
+
+log "Starting backup cleanup..."
+
+# Function to cleanup old backups
+cleanup_old_backups() {
+    local backup_type=$1
+    local retention_days=$2
+    local backup_path="$BACKUP_DIR/$backup_type"
+    
+    if [ -d "$backup_path" ]; then
+        log "Cleaning up $backup_type backups older than $retention_days days..."
+        
+        # Find and remove old backups
+        old_backups=$(find "$backup_path" -name "*.tar.gz" -type f -mtime +$retention_days 2>/dev/null)
+        
+        if [ -n "$old_backups" ]; then
+            echo "$old_backups" | while read -r backup; do
+                log "Removing old backup: $backup"
+                rm -f "$backup"
+            done
+            
+            count=$(echo "$old_backups" | wc -l)
+            log "Removed $count old $backup_type backups"
+        else
+            log "No old $backup_type backups found for cleanup"
+        fi
+    else
+        log "Backup directory $backup_path does not exist"
+    fi
+}
+
+# Cleanup each backup type
+cleanup_old_backups "daily" $DAILY_RETENTION
+cleanup_old_backups "weekly" $WEEKLY_RETENTION
+cleanup_old_backups "monthly" $MONTHLY_RETENTION
+
+# Cleanup log files older than 90 days
+log "Cleaning up old log files..."
+find /var/log/mikrotik-vpn -name "*.log" -type f -mtime +90 -exec rm -f {} \; 2>/dev/null || true
+
+# Report current backup space usage
+log "Current backup space usage:"
+du -sh $BACKUP_DIR/* 2>/dev/null | tee -a $LOG_FILE || true
+
+log "Backup cleanup completed"
+EOF
+
+    chmod +x $SCRIPT_DIR/cleanup-old-backups.sh
+}
+
+# =============================================================================
+# PHASE 10: SYSTEM MANAGEMENT SCRIPTS
+# =============================================================================
+
+phase10_management_scripts() {
+    log "==================================================================="
+    log "PHASE 10: SYSTEM MANAGEMENT SCRIPTS"
+    log "==================================================================="
+    
+    log "Creating management scripts..."
+    create_management_scripts
+    
+    log "Setting up system service..."
+    setup_system_service
+    
+    log "Creating maintenance scripts..."
+    create_maintenance_scripts
+    
+    log "Phase 10 completed successfully!"
+}
+
+create_management_scripts() {
+    # Master control script
+    cat << 'EOF' > $SYSTEM_DIR/mikrotik-vpn-manager.sh
+#!/bin/bash
+# MikroTik VPN System Master Management Script
+
+# Color codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# Configuration
+SYSTEM_DIR="/opt/mikrotik-vpn"
+LOG_DIR="/var/log/mikrotik-vpn"
+
+# Functions
+print_header() {
+    echo -e "${CYAN}======================================================================${NC}"
+    echo -e "${CYAN}              MikroTik VPN Management System v2.0${NC}"
+    echo -e "${CYAN}======================================================================${NC}"
+    echo
+}
+
+print_status() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+# Check if running as root
+check_root() {
+    if [ "$EUID" -ne 0 ]; then 
+        print_error "Please run as root (use sudo)"
+        exit 1
+    fi
+}
+
+# System status function
+show_system_status() {
+    print_header
+    echo -e "${BLUE}System Status Overview${NC}"
+    echo "======================================"
+    echo
+    
+    # System information
+    echo -e "${PURPLE}System Information:${NC}"
+    echo "Hostname: $(hostname)"
+    echo "Uptime: $(uptime -p)"
+    echo "Load Average: $(uptime | awk -F'load average:' '{print $2}')"
+    echo "Memory Usage: $(free -h | awk '/^Mem:/ {printf "Used: %s / Total: %s (%.1f%%)", $3, $2, $3/$2*100}')"
+    echo "Disk Usage: $(df -h / | awk 'NR==2 {printf "Used: %s / Total: %s (%s)", $3, $2, $5}')"
+    echo
+    
+    # Docker services status
+    echo -e "${PURPLE}Docker Services:${NC}"
+    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep mikrotik || echo "No MikroTik services running"
+    echo
+    
+    # VPN status
+    echo -e "${PURPLE}VPN Status:${NC}"
+    if docker ps | grep -q mikrotik-openvpn; then
+        echo "OpenVPN: Running"
+        if docker exec mikrotik-openvpn test -f /var/log/openvpn-status.log 2>/dev/null; then
+            clients=$(docker exec mikrotik-openvpn cat /var/log/openvpn-status.log 2>/dev/null | grep "CLIENT_LIST" | wc -l || echo "0")
+            echo "Connected VPN Clients: $clients"
+        fi
+    else
+        echo "OpenVPN: Not Running"
+    fi
+    
+    if docker ps | grep -q mikrotik-l2tp; then
+        echo "L2TP/IPSec: Running"
+    else
+        echo "L2TP/IPSec: Not Running"
+    fi
+    echo
+    
+    # Database status
+    echo -e "${PURPLE}Database Status:${NC}"
+    if docker ps | grep -q mikrotik-mongodb; then
+        echo "MongoDB: Running"
+    else
+        echo "MongoDB: Not Running"
+    fi
+    
+    if docker ps | grep -q mikrotik-redis; then
+        echo "Redis: Running"
+    else
+        echo "Redis: Not Running"
+    fi
+    echo
+}
+
+# Service management functions
+start_all_services() {
+    print_status "Starting all MikroTik VPN services..."
+    
+    cd $SYSTEM_DIR
+    
+    # Create Docker network if not exists
+    docker network create mikrotik-vpn-net --driver bridge --subnet=172.20.0.0/16 2>/dev/null || true
+    
+    # Start services in dependency order
+    print_status "Starting databases..."
+    docker compose -f docker-compose-mongodb.yml up -d
+    docker compose -f docker-compose-redis.yml up -d
+    
+    # Wait for databases
+    print_status "Waiting for databases to be ready..."
+    sleep 30
+    
+    print_status "Starting VPN services..."
+    docker compose -f docker-compose-openvpn.yml up -d
+    docker compose -f docker-compose-l2tp.yml up -d
+    
+    print_status "Starting application..."
+    docker compose -f docker-compose-app.yml up -d
+    
+    print_status "Starting web server..."
+    docker compose -f docker-compose-nginx.yml up -d
+    
+    print_status "Starting monitoring..."
+    docker compose -f docker-compose-monitoring.yml up -d
+    
+    print_status "All services started!"
+}
+
+stop_all_services() {
+    print_status "Stopping all MikroTik VPN services..."
+    
+    cd $SYSTEM_DIR
+    
+    # Stop services in reverse order
+    docker compose -f docker-compose-monitoring.yml down 2>/dev/null || true
     docker compose -f docker-compose-nginx.yml down 2>/dev/null || true
     docker compose -f docker-compose-app.yml down 2>/dev/null || true
     docker compose -f docker-compose-l2tp.yml down 2>/dev/null || true
@@ -3048,10 +2407,8 @@ view_logs() {
         echo "  mongodb      - Database logs"
         echo "  redis        - Cache logs"
         echo "  openvpn      - VPN server logs"
-        echo "  prometheus   - Monitoring logs"
-        echo "  grafana      - Dashboard logs"
         echo "  system       - System logs"
-        echo "  backup       - Backup logs"
+        echo "  all          - All container logs"
         echo
         echo "Usage: $0 logs <service_name>"
         return
@@ -3093,33 +2450,12 @@ view_logs() {
                 print_error "OpenVPN container is not running"
             fi
             ;;
-        "prometheus")
-            if docker ps | grep -q mikrotik-prometheus; then
-                docker logs -f mikrotik-prometheus
-            else
-                print_error "Prometheus container is not running"
-            fi
-            ;;
-        "grafana")
-            if docker ps | grep -q mikrotik-grafana; then
-                docker logs -f mikrotik-grafana
-            else
-                print_error "Grafana container is not running"
-            fi
-            ;;
         "system")
-            tail -f $LOG_DIR/setup.log 2>/dev/null || echo "No system log found"
-            ;;
-        "backup")
-            tail -f $LOG_DIR/backup.log 2>/dev/null || echo "No backup log found"
+            tail -f $LOG_DIR/setup.log
             ;;
         "all")
             cd $SYSTEM_DIR
-            for compose_file in docker-compose-*.yml; do
-                if [ -f "$compose_file" ]; then
-                    docker compose -f "$compose_file" logs --tail=50
-                fi
-            done
+            docker compose -f docker-compose-*.yml logs -f
             ;;
         *)
             print_error "Unknown service: $service"
@@ -3199,17 +2535,16 @@ show_main_menu() {
         print_header
         echo -e "${BLUE}Main Menu${NC}"
         echo "========================================="
-        echo "1.  System Status"
-        echo "2.  Start All Services"
-        echo "3.  Stop All Services"
-        echo "4.  Restart All Services"
-        echo "5.  View Logs"
-        echo "6.  VPN Client Management"
-        echo "7.  Run Backup"
-        echo "8.  Health Check"
-        echo "9.  Exit"
+        echo "1. System Status"
+        echo "2. Start All Services"
+        echo "3. Stop All Services"
+        echo "4. Restart All Services"
+        echo "5. View Logs"
+        echo "6. VPN Client Management"
+        echo "7. Backup System"
+        echo "8. Exit"
         echo
-        read -p "Select option (1-9): " choice
+        read -p "Select option (1-8): " choice
         
         case $choice in
             1) show_system_status ;;
@@ -3236,16 +2571,12 @@ show_main_menu() {
                 print_status "Running backup..."
                 $SYSTEM_DIR/scripts/backup-system.sh
                 ;;
-            8)
-                print_status "Running health check..."
-                $SYSTEM_DIR/scripts/health-check.sh
-                ;;
-            9) 
+            8) 
                 print_status "Exiting MikroTik VPN Manager"
                 exit 0
                 ;;
             *) 
-                print_error "Invalid option. Please select 1-9."
+                print_error "Invalid option. Please select 1-8."
                 ;;
         esac
         
@@ -3282,9 +2613,6 @@ main() {
         "backup")
             $SYSTEM_DIR/scripts/backup-system.sh
             ;;
-        "health")
-            $SYSTEM_DIR/scripts/health-check.sh
-            ;;
         "menu"|"")
             show_main_menu
             ;;
@@ -3301,15 +2629,8 @@ main() {
             echo "  logs <service>      - View service logs"
             echo "  vpn <action>        - VPN client management"
             echo "  backup              - Run backup now"
-            echo "  health              - Run health check"
             echo "  menu                - Show interactive menu (default)"
             echo "  help                - Show this help"
-            echo
-            echo "Examples:"
-            echo "  $0 status"
-            echo "  $0 logs app"
-            echo "  $0 vpn create client1"
-            echo "  $0 backup"
             ;;
         *)
             print_error "Unknown command: $1"
@@ -3340,24 +2661,24 @@ docker network create mikrotik-vpn-net --driver bridge --subnet=172.20.0.0/16 2>
 
 # Start in dependency order
 echo "Starting databases..."
-docker compose -f docker-compose-mongodb.yml up -d 2>/dev/null || true
-docker compose -f docker-compose-redis.yml up -d 2>/dev/null || true
+docker compose -f docker-compose-mongodb.yml up -d
+docker compose -f docker-compose-redis.yml up -d
 
 echo "Waiting for databases..."
 sleep 15
 
 echo "Starting VPN services..."
-docker compose -f docker-compose-openvpn.yml up -d 2>/dev/null || true
-docker compose -f docker-compose-l2tp.yml up -d 2>/dev/null || true
+docker compose -f docker-compose-openvpn.yml up -d
+docker compose -f docker-compose-l2tp.yml up -d
 
 echo "Starting application..."
-docker compose -f docker-compose-app.yml up -d 2>/dev/null || true
+docker compose -f docker-compose-app.yml up -d
 
 echo "Starting web server..."
-docker compose -f docker-compose-nginx.yml up -d 2>/dev/null || true
+docker compose -f docker-compose-nginx.yml up -d
 
 echo "Starting monitoring..."
-docker compose -f docker-compose-monitoring.yml up -d 2>/dev/null || true
+docker compose -f docker-compose-monitoring.yml up -d
 
 echo "All services started!"
 EOF
@@ -3395,7 +2716,6 @@ setup_system_service() {
 Description=MikroTik VPN Management System
 After=docker.service
 Requires=docker.service
-StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
@@ -3403,22 +2723,332 @@ RemainAfterExit=yes
 WorkingDirectory=/opt/mikrotik-vpn
 ExecStart=/opt/mikrotik-vpn/scripts/start-all-services.sh
 ExecStop=/opt/mikrotik-vpn/scripts/stop-all-services.sh
-ExecReload=/opt/mikrotik-vpn/mikrotik-vpn-manager.sh restart
 TimeoutStartSec=300
 TimeoutStopSec=120
-Restart=on-failure
-RestartSec=30
 User=root
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    # Enable and start service
+    # Enable service
     systemctl daemon-reload
     systemctl enable mikrotik-vpn.service
     
     log "SystemD service created and enabled"
+}
+
+create_maintenance_scripts() {
+    # Health check script
+    cat << 'EOF' > $SCRIPT_DIR/health-check.sh
+#!/bin/bash
+# Comprehensive health check script
+
+LOG_FILE="/var/log/mikrotik-vpn/health-check.log"
+FAILED_CHECKS=""
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a $LOG_FILE
+}
+
+check_service() {
+    local service=$1
+    local container_name="mikrotik-$service"
+    
+    if docker ps --format "{{.Names}}" | grep -q "^${container_name}$"; then
+        if docker ps --format "{{.Names}} {{.Status}}" | grep "^${container_name}" | grep -q "Up"; then
+            log "✓ $service is running and healthy"
+            return 0
+        else
+            log "✗ $service container exists but not healthy"
+            FAILED_CHECKS="$FAILED_CHECKS $service"
+            return 1
+        fi
+    else
+        log "✗ $service container not found"
+        FAILED_CHECKS="$FAILED_CHECKS $service"
+        return 1
+    fi
+}
+
+check_port() {
+    local port=$1
+    local service=$2
+    
+    if netstat -tlnp | grep ":$port " >/dev/null; then
+        log "✓ Port $port ($service) is listening"
+        return 0
+    else
+        log "✗ Port $port ($service) is not listening"
+        FAILED_CHECKS="$FAILED_CHECKS port-$port"
+        return 1
+    fi
+}
+
+check_disk_space() {
+    local usage=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')
+    
+    if [ "$usage" -lt 80 ]; then
+        log "✓ Disk usage is acceptable ($usage%)"
+        return 0
+    elif [ "$usage" -lt 90 ]; then
+        log "⚠ Disk usage is high ($usage%)"
+        return 0
+    else
+        log "✗ Disk usage is critical ($usage%)"
+        FAILED_CHECKS="$FAILED_CHECKS disk-space"
+        return 1
+    fi
+}
+
+check_memory() {
+    local usage=$(free | grep Mem | awk '{printf "%.0f", $3/$2 * 100}')
+    
+    if [ "$usage" -lt 80 ]; then
+        log "✓ Memory usage is acceptable ($usage%)"
+        return 0
+    elif [ "$usage" -lt 90 ]; then
+        log "⚠ Memory usage is high ($usage%)"
+        return 0
+    else
+        log "✗ Memory usage is critical ($usage%)"
+        FAILED_CHECKS="$FAILED_CHECKS memory"
+        return 1
+    fi
+}
+
+check_ssl_certificate() {
+    local cert_file="/opt/mikrotik-vpn/nginx/ssl/fullchain.pem"
+    
+    if [ -f "$cert_file" ]; then
+        local expiry_date=$(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2)
+        local expiry_epoch=$(date -d "$expiry_date" +%s)
+        local current_epoch=$(date +%s)
+        local days_left=$(( (expiry_epoch - current_epoch) / 86400 ))
+        
+        if [ "$days_left" -gt 30 ]; then
+            log "✓ SSL certificate is valid ($days_left days remaining)"
+            return 0
+        elif [ "$days_left" -gt 7 ]; then
+            log "⚠ SSL certificate expires soon ($days_left days remaining)"
+            return 0
+        else
+            log "✗ SSL certificate expires very soon ($days_left days remaining)"
+            FAILED_CHECKS="$FAILED_CHECKS ssl-expiry"
+            return 1
+        fi
+    else
+        log "✗ SSL certificate not found"
+        FAILED_CHECKS="$FAILED_CHECKS ssl-missing"
+        return 1
+    fi
+}
+
+# Main health check execution
+main() {
+    log "=== Starting Health Check ==="
+    log "Timestamp: $(date)"
+    log "Hostname: $(hostname)"
+    
+    # Check all critical services
+    log "Checking Docker services..."
+    check_service "mongodb"
+    check_service "redis"
+    check_service "app"
+    check_service "nginx"
+    check_service "openvpn"
+    
+    # Check critical ports
+    log "Checking network ports..."
+    check_port "80" "HTTP"
+    check_port "443" "HTTPS"
+    check_port "1194" "OpenVPN"
+    
+    # Check system resources
+    log "Checking system resources..."
+    check_disk_space
+    check_memory
+    
+    # Check SSL certificate
+    log "Checking SSL certificate..."
+    check_ssl_certificate
+    
+    # Summary
+    log "=== Health Check Summary ==="
+    if [ -z "$FAILED_CHECKS" ]; then
+        log "✓ All health checks passed"
+        exit 0
+    else
+        log "✗ Health check failures detected: $FAILED_CHECKS"
+        exit 1
+    fi
+}
+
+main "$@"
+EOF
+
+    chmod +x $SCRIPT_DIR/health-check.sh
+
+    # System optimization script
+    cat << 'EOF' > $SCRIPT_DIR/optimize-system.sh
+#!/bin/bash
+# System optimization script
+
+LOG_FILE="/var/log/mikrotik-vpn/optimization.log"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a $LOG_FILE
+}
+
+log "Starting system optimization..."
+
+# 1. Docker optimization
+log "Optimizing Docker..."
+docker system prune -f
+docker image prune -f
+docker volume prune -f
+
+# 2. Memory optimization
+log "Optimizing memory..."
+sync
+echo 3 > /proc/sys/vm/drop_caches
+
+# 3. Log rotation
+log "Rotating logs..."
+find /var/log -name "*.log" -size +100M -exec logrotate -f {} \; 2>/dev/null || true
+find /opt/mikrotik-vpn/logs -name "*.log" -size +50M -exec truncate -s 0 {} \; 2>/dev/null || true
+
+# 4. Temporary file cleanup
+log "Cleaning temporary files..."
+find /tmp -type f -atime +7 -delete 2>/dev/null || true
+find /var/tmp -type f -atime +7 -delete 2>/dev/null || true
+
+# 5. Package cache cleanup
+log "Cleaning package cache..."
+apt autoremove -y
+apt autoclean
+
+# 6. Database optimization
+log "Optimizing databases..."
+if docker ps | grep -q mikrotik-mongodb; then
+    docker exec mikrotik-mongodb mongosh --eval "db.runCommand({compact: 'users'})" mikrotik_vpn 2>/dev/null || true
+fi
+
+if docker ps | grep -q mikrotik-redis; then
+    docker exec mikrotik-redis redis-cli BGREWRITEAOF 2>/dev/null || true
+fi
+
+log "System optimization completed"
+EOF
+
+    chmod +x $SCRIPT_DIR/optimize-system.sh
+
+    # Security audit script
+    cat << 'EOF' > $SCRIPT_DIR/security-audit.sh
+#!/bin/bash
+# Security audit script
+
+LOG_FILE="/var/log/mikrotik-vpn/security-audit.log"
+REPORT_FILE="/var/log/mikrotik-vpn/security-report-$(date +%Y%m%d).txt"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a $LOG_FILE | tee -a $REPORT_FILE
+}
+
+log "=== Security Audit Report ==="
+log "Date: $(date)"
+log "Hostname: $(hostname)"
+log ""
+
+# 1. Check system updates
+log "1. System Updates Status:"
+updates=$(apt list --upgradable 2>/dev/null | wc -l)
+log "   Available updates: $((updates - 1))"
+if [ $updates -gt 1 ]; then
+    log "   ⚠ System updates available"
+else
+    log "   ✓ System is up to date"
+fi
+log ""
+
+# 2. Check user accounts
+log "2. User Account Security:"
+log "   Users with shell access:"
+awk -F: '$7 ~ /bash|sh/ {print "   " $1}' /etc/passwd | tee -a $REPORT_FILE
+log ""
+
+# 3. Check network services
+log "3. Network Services:"
+log "   Open ports:"
+netstat -tlnp | grep LISTEN | awk '{print "   " $4 " " $7}' | tee -a $REPORT_FILE
+log ""
+
+# 4. Check firewall status
+log "4. Firewall Status:"
+ufw_status=$(ufw status | head -1)
+log "   UFW: $ufw_status"
+if echo "$ufw_status" | grep -q "active"; then
+    log "   ✓ Firewall is active"
+else
+    log "   ⚠ Firewall is not active"
+fi
+log ""
+
+# 5. Check fail2ban status
+log "5. Fail2ban Status:"
+if systemctl is-active fail2ban >/dev/null; then
+    log "   ✓ Fail2ban is active"
+    log "   Active jails:"
+    fail2ban-client status 2>/dev/null | grep "Jail list" | cut -d: -f2 | tr ',' '\n' | sed 's/^/     /' | tee -a $REPORT_FILE || true
+else
+    log "   ⚠ Fail2ban is not active"
+fi
+log ""
+
+# 6. Check SSH configuration
+log "6. SSH Security:"
+ssh_config="/etc/ssh/sshd_config"
+if grep -q "PermitRootLogin no" $ssh_config 2>/dev/null; then
+    log "   ✓ Root login disabled"
+else
+    log "   ⚠ Root login may be enabled"
+fi
+
+ssh_port=$(grep "^Port" $ssh_config 2>/dev/null | awk '{print $2}' || echo "22")
+log "   SSH Port: $ssh_port"
+log ""
+
+# 7. Check SSL certificates
+log "7. SSL Certificate Security:"
+cert_file="/opt/mikrotik-vpn/nginx/ssl/fullchain.pem"
+if [ -f "$cert_file" ]; then
+    expiry=$(openssl x509 -in "$cert_file" -noout -enddate 2>/dev/null | cut -d= -f2)
+    log "   Certificate expires: $expiry"
+else
+    log "   ⚠ SSL certificate not found"
+fi
+log ""
+
+# 8. Check Docker security
+log "8. Docker Security:"
+if docker info 2>/dev/null | grep -q "Security Options"; then
+    log "   Docker security options:"
+    docker info 2>/dev/null | grep -A 5 "Security Options" | sed 's/^/     /' | tee -a $REPORT_FILE
+else
+    log "   ⚠ No Docker security options detected"
+fi
+log ""
+
+# 9. Check recent security events
+log "9. Recent Security Events:"
+log "    Recent failed login attempts:"
+grep "Failed password" /var/log/auth.log 2>/dev/null | tail -5 | sed 's/^/      /' | tee -a $REPORT_FILE || true
+log ""
+
+log "Security audit completed. Report saved to: $REPORT_FILE"
+EOF
+
+    chmod +x $SCRIPT_DIR/security-audit.sh
 }
 
 # =============================================================================
@@ -3481,12 +3111,12 @@ EOF
     
     # Run initial health check
     log "Running initial health check..."
-    $SCRIPT_DIR/health-check.sh || log_warning "Some services may need more time to start"
+    $SCRIPT_DIR/health-check.sh || log_warning "Some health checks failed - this is normal for first startup"
     
     # Generate SSL certificates (Let's Encrypt)
     log "Generating SSL certificates..."
     if ping -c 1 8.8.8.8 >/dev/null 2>&1; then
-        docker compose -f docker-compose-certbot.yml run --rm certbot 2>/dev/null || log_warning "SSL certificate generation failed, using self-signed"
+        docker compose -f docker-compose-certbot.yml run --rm certbot || log_warning "SSL certificate generation failed - using self-signed certificates"
         
         # Update symbolic links for certificates
         if [ -f "$SYSTEM_DIR/nginx/ssl/live/$DOMAIN_NAME/fullchain.pem" ]; then
@@ -3494,7 +3124,7 @@ EOF
             ln -sf $SYSTEM_DIR/nginx/ssl/live/$DOMAIN_NAME/privkey.pem $SYSTEM_DIR/nginx/ssl/privkey.pem
             
             # Reload Nginx with new certificates
-            docker exec mikrotik-nginx nginx -s reload 2>/dev/null || true
+            docker exec mikrotik-nginx nginx -s reload
             log "SSL certificates installed and Nginx reloaded"
         fi
     else
@@ -3503,7 +3133,19 @@ EOF
     
     # Create initial VPN client for testing
     log "Creating test VPN client..."
-    $SCRIPT_DIR/generate-vpn-client.sh "test-client" 2>/dev/null || log_warning "Failed to create test client"
+    $SCRIPT_DIR/generate-vpn-client.sh "test-client" || log_warning "Failed to create test VPN client"
+    
+    # Set up cron jobs
+    log "Setting up automated tasks..."
+    
+    # Health check every 5 minutes
+    (crontab -l 2>/dev/null; echo "*/5 * * * * /opt/mikrotik-vpn/scripts/health-check.sh >/dev/null 2>&1") | crontab -
+    
+    # System optimization weekly
+    (crontab -l 2>/dev/null; echo "0 2 * * 0 /opt/mikrotik-vpn/scripts/optimize-system.sh >/dev/null 2>&1") | crontab -
+    
+    # Security audit monthly
+    (crontab -l 2>/dev/null; echo "0 3 1 * * /opt/mikrotik-vpn/scripts/security-audit.sh >/dev/null 2>&1") | crontab -
     
     # Final system verification
     log "==================================================================="
@@ -3522,7 +3164,7 @@ EOF
     done
     
     # Check network connectivity
-    if curl -s -o /dev/null -w "%{http_code}" http://localhost 2>/dev/null | grep -q "200\|301\|302"; then
+    if curl -s -o /dev/null -w "%{http_code}" http://localhost:80 2>/dev/null | grep -q "200\|301\|302"; then
         log "✓ Web server is responding"
     else
         log_warning "Web server may not be responding correctly"
@@ -3651,7 +3293,7 @@ EOF
     # Set proper permissions
     chown -R mikrotik-vpn:mikrotik-vpn $SYSTEM_DIR
     chmod -R 755 $SCRIPT_DIR
-    chmod 600 $SYSTEM_DIR/app/.env 2>/dev/null || true
+    chmod 600 $SYSTEM_DIR/app/.env
     chmod 600 $SYSTEM_DIR/configs/setup.env
     
     log "Installation report saved to: $SYSTEM_DIR/installation-report.txt"
@@ -3765,350 +3407,4 @@ case "${1:-}" in
         echo "Use --help for usage information"
         exit 1
         ;;
-esac $compose_file down 2>/dev/null || true
-        fi
-    done
-    
-    # Restore configuration files
-    log "Restoring configuration files..."
-    if [ -f "$backup_dir/configs.tar.gz" ]; then
-        cd /
-        tar -xzf $backup_dir/configs.tar.gz 2>/dev/null || true
-    fi
-    
-    # Restore SSL certificates
-    log "Restoring SSL certificates..."
-    if [ -f "$backup_dir/ssl.tar.gz" ]; then
-        cd /
-        tar -xzf $backup_dir/ssl.tar.gz 2>/dev/null || true
-    fi
-    
-    # Restore application data
-    log "Restoring application data..."
-    if [ -f "$backup_dir/app_data.tar.gz" ]; then
-        cd /
-        tar -xzf $backup_dir/app_data.tar.gz 2>/dev/null || true
-    fi
-    
-    # Start databases first
-    log "Starting databases..."
-    cd /opt/mikrotik-vpn
-    docker compose -f docker-compose-mongodb.yml up -d 2>/dev/null || true
-    docker compose -f docker-compose-redis.yml up -d 2>/dev/null || true
-    
-    sleep 15
-    
-    # Restore databases
-    log "Restoring MongoDB..."
-    if [ -d "$backup_dir/mongodb-backup" ]; then
-        docker cp $backup_dir/mongodb-backup mikrotik-mongodb:/tmp/ 2>/dev/null || true
-        docker exec mikrotik-mongodb mongorestore \
-            --host localhost \
-            --username admin \
-            --password $MONGO_ROOT_PASSWORD \
-            --authenticationDatabase admin \
-            --drop \
-            /tmp/mongodb-backup 2>/dev/null || true
-        docker exec mikrotik-mongodb rm -rf /tmp/mongodb-backup 2>/dev/null || true
-    fi
-    
-    log "Restoring Redis..."
-    if [ -f "$backup_dir/redis_dump.rdb" ]; then
-        docker compose -f docker-compose-redis.yml down 2>/dev/null || true
-        docker cp $backup_dir/redis_dump.rdb mikrotik-redis:/data/dump.rdb 2>/dev/null || true
-        docker compose -f docker-compose-redis.yml up -d 2>/dev/null || true
-    fi
-    
-    # Start all services
-    log "Starting all services..."
-    /opt/mikrotik-vpn/scripts/start-all-services.sh
-    
-    # Cleanup
-    rm -rf $temp_dir
-    
-    log "Restore completed successfully!"
-    log "Please verify all services are working correctly"
-}
-
-# Main function
-main() {
-    if [ $# -eq 0 ]; then
-        echo "MikroTik VPN System Restore Utility"
-        echo "===================================="
-        echo "Usage: $0 [backup_file]"
-        echo ""
-        list_backups
-        echo ""
-        echo "Example: $0 /opt/mikrotik-vpn/backups/daily/backup_20240101_120000.tar.gz"
-        exit 0
-    fi
-    
-    restore_backup "$1"
-}
-
-main "$@"
-EOF
-
-    chmod +x $SCRIPT_DIR/restore-system.sh
-}
-
-setup_backup_automation() {
-    # Create cron jobs for automated backups
-    cat << EOF > /etc/cron.d/mikrotik-vpn-backup
-# MikroTik VPN System Backup Schedule
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-
-# Daily backup at 2:00 AM
-0 2 * * * root /opt/mikrotik-vpn/scripts/backup-system.sh >> /var/log/mikrotik-vpn/backup-cron.log 2>&1
-
-# Health check every 5 minutes
-*/5 * * * * root /opt/mikrotik-vpn/scripts/health-check.sh >/dev/null 2>&1
-EOF
-
-    # Create health check script
-    cat << 'EOF' > $SCRIPT_DIR/health-check.sh
-#!/bin/bash
-# Comprehensive health check script
-
-LOG_FILE="/var/log/mikrotik-vpn/health-check.log"
-FAILED_CHECKS=""
-
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a $LOG_FILE
-}
-
-check_service() {
-    local service=$1
-    local container_name="mikrotik-$service"
-    
-    if docker ps --format "{{.Names}}" | grep -q "^${container_name}$"; then
-        if docker ps --format "{{.Names}} {{.Status}}" | grep "^${container_name}" | grep -q "Up"; then
-            return 0
-        else
-            FAILED_CHECKS="$FAILED_CHECKS $service"
-            return 1
-        fi
-    else
-        FAILED_CHECKS="$FAILED_CHECKS $service"
-        return 1
-    fi
-}
-
-check_disk_space() {
-    local usage=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')
-    
-    if [ "$usage" -lt 90 ]; then
-        return 0
-    else
-        FAILED_CHECKS="$FAILED_CHECKS disk-space"
-        return 1
-    fi
-}
-
-# Main health check execution
-main() {
-    # Check all critical services
-    check_service "mongodb"
-    check_service "redis"
-    check_service "app"
-    check_service "nginx"
-    check_service "openvpn"
-    
-    # Check system resources
-    check_disk_space
-    
-    # Summary
-    if [ -z "$FAILED_CHECKS" ]; then
-        exit 0
-    else
-        log "Health check failures detected: $FAILED_CHECKS"
-        exit 1
-    fi
-}
-
-main "$@"
-EOF
-
-    chmod +x $SCRIPT_DIR/health-check.sh
-}
-
-# =============================================================================
-# PHASE 10: SYSTEM MANAGEMENT SCRIPTS
-# =============================================================================
-
-phase10_management_scripts() {
-    log "==================================================================="
-    log "PHASE 10: SYSTEM MANAGEMENT SCRIPTS"
-    log "==================================================================="
-    
-    log "Creating management scripts..."
-    create_management_scripts
-    
-    log "Setting up system service..."
-    setup_system_service
-    
-    log "Phase 10 completed successfully!"
-}
-
-create_management_scripts() {
-    # Master control script
-    cat << 'EOF' > $SYSTEM_DIR/mikrotik-vpn-manager.sh
-#!/bin/bash
-# MikroTik VPN System Master Management Script
-
-# Color codes
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
-# Configuration
-SYSTEM_DIR="/opt/mikrotik-vpn"
-LOG_DIR="/var/log/mikrotik-vpn"
-
-# Functions
-print_header() {
-    echo -e "${CYAN}======================================================================${NC}"
-    echo -e "${CYAN}              MikroTik VPN Management System v2.0${NC}"
-    echo -e "${CYAN}======================================================================${NC}"
-    echo
-}
-
-print_status() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
-
-print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-# Check if running as root
-check_root() {
-    if [ "$EUID" -ne 0 ]; then 
-        print_error "Please run as root (use sudo)"
-        exit 1
-    fi
-}
-
-# System status function
-show_system_status() {
-    print_header
-    echo -e "${BLUE}System Status Overview${NC}"
-    echo "======================================"
-    echo
-    
-    # System information
-    echo -e "${PURPLE}System Information:${NC}"
-    echo "Hostname: $(hostname)"
-    echo "Uptime: $(uptime -p)"
-    echo "Load Average: $(uptime | awk -F'load average:' '{print $2}')"
-    echo "Memory Usage: $(free -h | awk '/^Mem:/ {printf "Used: %s / Total: %s", $3, $2}')"
-    echo "Disk Usage: $(df -h / | awk 'NR==2 {printf "Used: %s / Total: %s (%s)", $3, $2, $5}')"
-    echo
-    
-    # Docker services status
-    echo -e "${PURPLE}Docker Services:${NC}"
-    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep mikrotik || echo "No MikroTik services running"
-    echo
-    
-    # VPN status
-    echo -e "${PURPLE}VPN Status:${NC}"
-    if docker ps | grep -q mikrotik-openvpn; then
-        echo "OpenVPN: Running"
-        # Show connected clients
-        if docker exec mikrotik-openvpn test -f /var/log/openvpn-status.log 2>/dev/null; then
-            clients=$(docker exec mikrotik-openvpn cat /var/log/openvpn-status.log 2>/dev/null | grep "CLIENT_LIST" | wc -l || echo "0")
-            echo "Connected VPN Clients: $clients"
-        fi
-    else
-        echo "OpenVPN: Not Running"
-    fi
-    
-    if docker ps | grep -q mikrotik-l2tp; then
-        echo "L2TP/IPSec: Running"
-    else
-        echo "L2TP/IPSec: Not Running"
-    fi
-    echo
-    
-    # Database status
-    echo -e "${PURPLE}Database Status:${NC}"
-    if docker ps | grep -q mikrotik-mongodb; then
-        echo "MongoDB: Running"
-    else
-        echo "MongoDB: Not Running"
-    fi
-    
-    if docker ps | grep -q mikrotik-redis; then
-        echo "Redis: Running"
-    else
-        echo "Redis: Not Running"
-    fi
-    echo
-    
-    # Security status
-    echo -e "${PURPLE}Security Status:${NC}"
-    echo "UFW Status: $(ufw status | head -1)"
-    echo "Fail2ban Status: $(systemctl is-active fail2ban 2>/dev/null || echo 'inactive')"
-    
-    # Backup status
-    echo
-    echo -e "${PURPLE}Backup Status:${NC}"
-    latest_backup=$(ls -t /opt/mikrotik-vpn/backups/daily/*.tar.gz 2>/dev/null | head -1)
-    if [ -n "$latest_backup" ]; then
-        backup_date=$(stat -c %y "$latest_backup" | cut -d' ' -f1)
-        backup_size=$(du -h "$latest_backup" | cut -f1)
-        echo "Latest Backup: $backup_date ($backup_size)"
-    else
-        echo "Latest Backup: No backups found"
-    fi
-}
-
-# Service management functions
-start_all_services() {
-    print_status "Starting all MikroTik VPN services..."
-    
-    cd $SYSTEM_DIR
-    
-    # Create Docker network if not exists
-    docker network create mikrotik-vpn-net --driver bridge --subnet=172.20.0.0/16 2>/dev/null || true
-    
-    # Start services in dependency order
-    print_status "Starting databases..."
-    docker compose -f docker-compose-mongodb.yml up -d 2>/dev/null || true
-    docker compose -f docker-compose-redis.yml up -d 2>/dev/null || true
-    
-    print_status "Waiting for databases..."
-    sleep 15
-    
-    print_status "Starting VPN services..."
-    docker compose -f docker-compose-openvpn.yml up -d 2>/dev/null || true
-    docker compose -f docker-compose-l2tp.yml up -d 2>/dev/null || true
-    
-    print_status "Starting application..."
-    docker compose -f docker-compose-app.yml up -d 2>/dev/null || true
-    
-    print_status "Starting web server..."
-    docker compose -f docker-compose-nginx.yml up -d 2>/dev/null || true
-    
-    print_status "Starting monitoring..."
-    docker compose -f docker-compose-monitoring.yml up -d 2>/dev/null || true
-    
-    print_status "All services started!"
-}
-
-stop_all_services() {
-    print_status "Stopping all MikroTik VPN services..."
-    
-    cd $SYSTEM_DIR
-    
-    # Stop services in reverse order
-    docker compose -f
+esac
