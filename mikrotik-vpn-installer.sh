@@ -51,31 +51,83 @@ check_installation() {
 # Create initial directories early to avoid path issues
 create_initial_directories() {
     echo "Creating system directories..."
-    mkdir -p $SYSTEM_DIR
-    mkdir -p $LOG_DIR
-    mkdir -p $BACKUP_DIR/{daily,weekly,monthly}
-    mkdir -p $SCRIPT_DIR
+    
+    # Create directories with error handling
+    mkdir -p $SYSTEM_DIR 2>/dev/null || {
+        echo "Error: Cannot create $SYSTEM_DIR - check permissions"
+        exit 1
+    }
+    
+    mkdir -p $LOG_DIR 2>/dev/null || {
+        echo "Error: Cannot create $LOG_DIR - check permissions"  
+        exit 1
+    }
+    
+    mkdir -p $BACKUP_DIR/{daily,weekly,monthly} 2>/dev/null || {
+        echo "Warning: Cannot create backup directories"
+    }
+    
+    mkdir -p $SCRIPT_DIR 2>/dev/null || {
+        echo "Warning: Cannot create scripts directory"
+    }
     
     # Create a basic log file if it doesn't exist
-    touch $LOG_DIR/setup.log
-    chmod 644 $LOG_DIR/setup.log
+    touch $LOG_DIR/setup.log 2>/dev/null || {
+        echo "Warning: Cannot create log file"
+    }
+    
+    chmod 644 $LOG_DIR/setup.log 2>/dev/null || true
+    
+    echo "System directories created successfully"
 }
 
-# Logging function
+# Logging function with fallback
 log() {
-    echo -e "${GREEN}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1" | tee -a $LOG_DIR/setup.log
+    local message="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+    echo -e "${GREEN}${message}${NC}"
+    
+    # Try to write to log file, fallback to stdout if fails
+    if [ -w "$LOG_DIR/setup.log" ] 2>/dev/null; then
+        echo "$message" >> $LOG_DIR/setup.log
+    elif [ -d "$LOG_DIR" ] 2>/dev/null; then
+        echo "$message" >> $LOG_DIR/setup.log 2>/dev/null || echo "Warning: Cannot write to log file"
+    fi
 }
 
 log_error() {
-    echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')] ERROR:${NC} $1" | tee -a $LOG_DIR/setup.log
+    local message="[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $1"
+    echo -e "${RED}${message}${NC}"
+    
+    # Try to write to log file, fallback to stdout if fails  
+    if [ -w "$LOG_DIR/setup.log" ] 2>/dev/null; then
+        echo "$message" >> $LOG_DIR/setup.log
+    elif [ -d "$LOG_DIR" ] 2>/dev/null; then
+        echo "$message" >> $LOG_DIR/setup.log 2>/dev/null || true
+    fi
 }
 
 log_warning() {
-    echo -e "${YELLOW}[$(date '+%Y-%m-%d %H:%M:%S')] WARNING:${NC} $1" | tee -a $LOG_DIR/setup.log
+    local message="[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: $1"
+    echo -e "${YELLOW}${message}${NC}"
+    
+    # Try to write to log file, fallback to stdout if fails
+    if [ -w "$LOG_DIR/setup.log" ] 2>/dev/null; then
+        echo "$message" >> $LOG_DIR/setup.log
+    elif [ -d "$LOG_DIR" ] 2>/dev/null; then
+        echo "$message" >> $LOG_DIR/setup.log 2>/dev/null || true
+    fi
 }
 
 log_info() {
-    echo -e "${BLUE}[$(date '+%Y-%m-%d %H:%M:%S')] INFO:${NC} $1" | tee -a $LOG_DIR/setup.log
+    local message="[$(date '+%Y-%m-%d %H:%M:%S')] INFO: $1"
+    echo -e "${BLUE}${message}${NC}"
+    
+    # Try to write to log file, fallback to stdout if fails
+    if [ -w "$LOG_DIR/setup.log" ] 2>/dev/null; then
+        echo "$message" >> $LOG_DIR/setup.log
+    elif [ -d "$LOG_DIR" ] 2>/dev/null; then
+        echo "$message" >> $LOG_DIR/setup.log 2>/dev/null || true
+    fi
 }
 
 # Function to check if running as root
@@ -88,33 +140,42 @@ check_root() {
 
 # Function to clean up incomplete installation
 cleanup_incomplete_installation() {
-    log "Cleaning up incomplete installation..."
+    echo "Cleaning up incomplete installation..."
     
-    # Stop any running containers
-    docker stop $(docker ps -q --filter name=mikrotik) 2>/dev/null || true
-    docker rm $(docker ps -aq --filter name=mikrotik) 2>/dev/null || true
-    
-    # Remove Docker network if exists
-    docker network rm mikrotik-vpn-net 2>/dev/null || true
+    # Check if Docker is installed before trying to use it
+    if command -v docker >/dev/null 2>&1; then
+        # Stop any running containers
+        docker stop $(docker ps -q --filter name=mikrotik 2>/dev/null) 2>/dev/null || true
+        docker rm $(docker ps -aq --filter name=mikrotik 2>/dev/null) 2>/dev/null || true
+        
+        # Remove Docker network if exists
+        docker network rm mikrotik-vpn-net 2>/dev/null || true
+    else
+        echo "Docker not found - skipping container cleanup"
+    fi
     
     # Remove systemd service if exists
     systemctl stop mikrotik-vpn 2>/dev/null || true
     systemctl disable mikrotik-vpn 2>/dev/null || true
     rm -f /etc/systemd/system/mikrotik-vpn.service
-    systemctl daemon-reload
+    systemctl daemon-reload 2>/dev/null || true
     
     # Backup existing config if present
     if [ -f "$SYSTEM_DIR/configs/setup.env" ]; then
-        log "Backing up existing configuration..."
-        cp $SYSTEM_DIR/configs/setup.env /tmp/mikrotik-vpn-backup.env
+        echo "Backing up existing configuration..."
+        mkdir -p /tmp
+        cp $SYSTEM_DIR/configs/setup.env /tmp/mikrotik-vpn-backup.env 2>/dev/null || true
         BACKUP_CONFIG_EXISTS=true
     fi
     
     # Remove incomplete installation
-    rm -rf $SYSTEM_DIR
-    rm -rf $LOG_DIR
+    rm -rf $SYSTEM_DIR 2>/dev/null || true
+    rm -rf $LOG_DIR 2>/dev/null || true
     
-    log "Cleanup completed"
+    # Remove cron jobs
+    rm -f /etc/cron.d/mikrotik-vpn 2>/dev/null || true
+    
+    echo "Cleanup completed"
 }
 
 # Function to restore previous configuration
@@ -2338,7 +2399,7 @@ main() {
     
     print_banner
     
-    # Create initial directories early
+    # Create initial directories early with proper error handling
     create_initial_directories
     
     # Check if system is already installed
@@ -2353,11 +2414,18 @@ main() {
         case $existing_choice in
             1)
                 if check_installation; then
-                    exec $SYSTEM_DIR/mikrotik-vpn-manager.sh
+                    if [ -f "$SYSTEM_DIR/mikrotik-vpn-manager.sh" ]; then
+                        exec $SYSTEM_DIR/mikrotik-vpn-manager.sh
+                    else
+                        echo "Manager script not found. Please reinstall."
+                        exit 1
+                    fi
                 else
-                    log_warning "Installation appears incomplete. Proceeding with cleanup and reinstall..."
+                    echo "Installation appears incomplete. Proceeding with cleanup and reinstall..."
                     BACKUP_CONFIG_EXISTS=false
                     cleanup_incomplete_installation
+                    # Recreate directories after cleanup
+                    create_initial_directories
                     main_installation
                 fi
                 ;;
@@ -2366,6 +2434,8 @@ main() {
                 read -p "Are you absolutely sure? (type 'yes' to confirm): " confirm
                 if [ "$confirm" = "yes" ]; then
                     cleanup_incomplete_installation
+                    # Recreate directories after cleanup
+                    create_initial_directories
                     main_installation
                 else
                     echo "Reinstallation cancelled."
@@ -2377,7 +2447,7 @@ main() {
                 exit 0
                 ;;
             *)
-                log_error "Invalid option"
+                echo "Invalid option"
                 exit 1
                 ;;
         esac
@@ -2387,9 +2457,9 @@ main() {
     fi
 }
 
-# Set error handling
+# Set error handling with better error message
 set -e
-trap 'log_error "Installation failed at line $LINENO. Check $LOG_DIR/setup.log for details."' ERR
+trap 'echo "ERROR: Installation failed at line $LINENO. Please check the output above for details." >&2; exit 1' ERR
 
 # Run main function
 main "$@"
