@@ -1405,6 +1405,23 @@ LOG_DIR="/var/log/mikrotik-vpn"
 BACKUP_DIR="/opt/mikrotik-vpn/backups"
 SCRIPT_DIR="/opt/mikrotik-vpn/scripts"
 
+# Basic utility functions (defined first)
+print_status() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1" >&2
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+print_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
 # Logging functions
 log() {
     local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
@@ -1449,7 +1466,7 @@ log_info() {
 # Function to check if running as root
 check_root() {
     if [ "$EUID" -ne 0 ]; then 
-        log_error "Please run this script as root (use sudo)"
+        print_error "Please run this script as root (use sudo)"
         exit 1
     fi
 }
