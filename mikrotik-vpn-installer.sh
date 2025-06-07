@@ -4282,12 +4282,7 @@ main() {
     log "Installation completed successfully!"
 }
 
-# Run main function
-# Run main function
-# Run main function
 main "$@"
-
-# Exit successfully
 exit 0
 
 
