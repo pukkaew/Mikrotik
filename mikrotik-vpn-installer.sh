@@ -490,6 +490,29 @@ setup_openvpn_server() {
     
     # Download Easy-RSA
     log "Downloading Easy-RSA..."
+    rm -rf easy-rsa
+    mkdir -p easy-rsa
+    wget -q https://github.com/OpenVPN/easy-rsa/releases/download/v3.1.0/EasyRSA-3.1.0.tgz
+    tar xzf EasyRSA-3.1.0.tgz
+    mv EasyRSA-3.1.0/* easy-rsa/
+    rm -rf EasyRSA-3.1.0*
+    cd easy-rsa
+    ./easyrsa init-pki
+    cat << EOF > pki/vars
+set_var EASYRSA_REQ_COUNTRY    "TH"
+set_var EASYRSA_REQ_PROVINCE   "Bangkok"
+set_var EASYRSA_REQ_CITY       "Bangkok"
+set_var EASYRSA_REQ_ORG        "MikroTik VPN System"
+set_var EASYRSA_REQ_EMAIL      "$ADMIN_EMAIL"
+set_var EASYRSA_REQ_OU         "VPN Management"
+set_var EASYRSA_ALGO           "rsa"
+set_var EASYRSA_KEY_SIZE       2048
+set_var EASYRSA_DIGEST         "sha256"
+EOF
+    EASYRSA_BATCH=1 EASYRSA_REQ_CN="MikroTik-VPN-CA" ./easyrsa build-ca nopass
+    EASYRSA_BATCH=1 EASYRSA_REQ_CN="vpn-server" ./easyrsa gen-req vpn-server nopass
+    EASYRSA_BATCH=1 ./easyrsa sign-req server vpn-server
+    ./easyrsa gen-dh
     # ลบ directory เดิม (ถ้ามี) เพื่อป้องกัน conflict
     rm -rf easy-rsa
     mkdir -p easy-rsa
@@ -500,30 +523,15 @@ setup_openvpn_server() {
     
     # Configure Easy-RSA
     cd easy-rsa
-    cat << EOF > vars
-set_var EASYRSA_REQ_COUNTRY    "TH"
-set_var EASYRSA_REQ_PROVINCE   "Bangkok"
-set_var EASYRSA_REQ_CITY       "Bangkok"
-set_var EASYRSA_REQ_ORG        "MikroTik VPN System"
-set_var EASYRSA_REQ_EMAIL      "$ADMIN_EMAIL"
-set_var EASYRSA_REQ_OU         "VPN Management"
-set_var EASYRSA_ALGO           "ec"
-set_var EASYRSA_DIGEST         "sha512"
-set_var EASYRSA_KEY_SIZE       2048
 EOF
     
     # Initialize PKI
 
 
-    ./easyrsa init-pki
-    echo "MikroTik-VPN-CA" | ./easyrsa build-ca nopass
     
     # Generate server certificate
-    ./easyrsa gen-req vpn-server nopass
-    ./easyrsa sign-req server vpn-server
     
     # Generate DH parameters
-    ./easyrsa gen-dh
     
     # Generate TLS auth key
     openvpn --genkey secret ta.key
