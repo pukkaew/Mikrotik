@@ -510,15 +510,29 @@ set_var EASYRSA_KEY_SIZE       2048
 EOF
     
     # Initialize PKI
-    ./easyrsa init-pki
-    echo "MikroTik-VPN-CA" | ./easyrsa build-ca nopass
+
+    # Patch: Detect correct path to easyrsa
+    EASYRSA_CMD="./easyrsa"
+    if [ ! -x "$EASYRSA_CMD" ]; then
+      if [ -x "/usr/share/easy-rsa/easyrsa" ]; then
+        EASYRSA_CMD="/usr/share/easy-rsa/easyrsa"
+      elif command -v easyrsa >/dev/null 2>&1; then
+        EASYRSA_CMD="$(command -v easyrsa)"
+      else
+        echo "Easy-RSA executable not found!"
+        exit 1
+      fi
+    fi
+
+    $EASYRSA_CMD init-pki
+    echo "MikroTik-VPN-CA" | $EASYRSA_CMD build-ca nopass
     
     # Generate server certificate
-    ./easyrsa gen-req vpn-server nopass
-    ./easyrsa sign-req server vpn-server
+    $EASYRSA_CMD gen-req vpn-server nopass
+    $EASYRSA_CMD sign-req server vpn-server
     
     # Generate DH parameters
-    ./easyrsa gen-dh
+    $EASYRSA_CMD gen-dh
     
     # Generate TLS auth key
     openvpn --genkey secret ta.key
