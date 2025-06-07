@@ -410,8 +410,8 @@ phase2_docker_installation() {
     apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     
     # Configure Docker
-    log "Configuring Docker..."
-    configure_docker
+    # log "Configuring Docker..."
+    # configure_docker
     
     # Add users to docker group
     log "Adding users to docker group..."
