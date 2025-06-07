@@ -90,7 +90,7 @@ get_user_input() {
             continue
         fi
         
-if [[ $DOMAIN_NAME =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] && [[ ${#DOMAIN_NAME} -le 255 ]]; then
+        if [[ $DOMAIN_NAME =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] && [[ ${#DOMAIN_NAME} -le 255 ]]; then
             break
         else
             echo "Invalid domain name format. Please enter a valid domain."
@@ -2352,10 +2352,9 @@ harden_ssh() {
     # Backup original SSH config
     cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%Y%m%d_%H%M%S)
     
+    # Create hardened SSH configuration
     ssh-keygen -A
 
-# Create hardened SSH configuration
-ssh-keygen -A
     cat << EOF > /etc/ssh/sshd_config.d/99-mikrotik-vpn-hardening.conf
 # SSH Hardening for MikroTik VPN System
 Port $SSH_PORT
@@ -4284,6 +4283,3 @@ main() {
 
 main "$@"
 exit 0
-
-
-# Exit with proper code
