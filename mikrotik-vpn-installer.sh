@@ -810,7 +810,7 @@ services:
     networks:
       - mikrotik-vpn-net
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      test: echo 'db.runCommand("ping").ok' | mongo localhost:27017/test --quiet
       interval: 30s
       timeout: 10s
       retries: 5
@@ -890,7 +890,7 @@ services:
     networks:
       - mikrotik-vpn-net
     healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -904,7 +904,7 @@ services:
       - HTTP_USER=admin
       - HTTP_PASSWORD=$REDIS_PASSWORD
     ports:
-      - "127.0.0.1:8083:8081"
+      - "127.0.0.1:8081:8081"
     networks:
       - mikrotik-vpn-net
     depends_on:
@@ -1567,6 +1567,7 @@ JWT_EXPIRES_IN=24h
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=$ADMIN_EMAIL
+# TODO: Replace with real SMTP App Password
 SMTP_PASS=your-app-password
 FROM_EMAIL=$ADMIN_EMAIL
 
@@ -2349,7 +2350,9 @@ harden_ssh() {
     # Backup original SSH config
     cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%Y%m%d_%H%M%S)
     
-    # Create hardened SSH configuration
+    ssh-keygen -A
+
+# Create hardened SSH configuration
     cat << EOF > /etc/ssh/sshd_config.d/99-mikrotik-vpn-hardening.conf
 # SSH Hardening for MikroTik VPN System
 Port $SSH_PORT
