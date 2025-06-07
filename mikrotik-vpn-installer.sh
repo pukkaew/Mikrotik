@@ -490,6 +490,9 @@ setup_openvpn_server() {
     
     # Download Easy-RSA
     log "Downloading Easy-RSA..."
+    # ลบ directory เดิม (ถ้ามี) เพื่อป้องกัน conflict
+    rm -rf easy-rsa
+    mkdir -p easy-rsa
     wget -q https://github.com/OpenVPN/easy-rsa/releases/download/v3.1.0/EasyRSA-3.1.0.tgz
     tar xzf EasyRSA-3.1.0.tgz
     mv EasyRSA-3.1.0/* easy-rsa/
