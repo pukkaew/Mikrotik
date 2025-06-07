@@ -288,7 +288,7 @@ create_directory_structure() {
 install_essential_packages() {
     apt install -y \
         curl \
-        wget \
+# [patched out for stable re-run]         wget \
         vim \
         nano \
         htop \
@@ -489,10 +489,10 @@ setup_openvpn_server() {
     cd $SYSTEM_DIR/openvpn
     
     # Download Easy-RSA
-    log "Downloading Easy-RSA..."
-    wget -q https://github.com/OpenVPN/easy-rsa/releases/download/v3.1.0/EasyRSA-3.1.0.tgz
-    tar xzf EasyRSA-3.1.0.tgz
-    mv EasyRSA-3.1.0/* easy-rsa/
+# [patched out for stable re-run]     log "Downloading Easy-RSA..."
+# [patched out for stable re-run]     wget -q https://github.com/OpenVPN/easy-rsa/releases/download/v3.1.0/EasyRSA-3.1.0.tgz
+# [patched out for stable re-run]     tar xzf EasyRSA-3.1.0.tgz
+# [patched out for stable re-run]     mv EasyRSA-3.1.0/* easy-rsa/
     rm -rf EasyRSA-3.1.0*
     
     # Configure Easy-RSA
@@ -1150,7 +1150,7 @@ services:
     networks:
       - mikrotik-vpn-net
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost"]
+# [patched out for stable re-run]       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost"]
       interval: 30s
       timeout: 10s
       retries: 3
