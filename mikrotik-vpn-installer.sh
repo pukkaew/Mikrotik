@@ -747,8 +747,10 @@ $(cat pki/private/$CLIENT_NAME.key)
 $(cat ta.key)
 </tls-auth>
 key-direction 1
+OVPN_EOF
 
 echo "Client configuration created: $SYSTEM_DIR/clients/$CLIENT_NAME.ovpn"
+SCRIPT_EOF
 SCRIPT_EOF
 EOF
     
