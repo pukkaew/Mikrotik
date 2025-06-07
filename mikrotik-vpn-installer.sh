@@ -288,7 +288,7 @@ create_directory_structure() {
 install_essential_packages() {
     apt install -y \
         curl \
-# [patched out for stable re-run]         wget \
+        wget \
         vim \
         nano \
         htop \
@@ -410,8 +410,8 @@ phase2_docker_installation() {
     apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     
     # Configure Docker
-    # log "Configuring Docker..."
-    # configure_docker
+# log "Configuring Docker..."
+# configure_docker
     
     # Add users to docker group
     log "Adding users to docker group..."
@@ -421,9 +421,9 @@ phase2_docker_installation() {
     usermod -aG docker mikrotik-vpn
     
     # Start Docker
-#    log "Starting Docker..."
-#    systemctl enable docker
-#    systemctl start docker
+log "Starting Docker..."
+systemctl enable docker
+systemctl start docker
     
     # Create Docker network
     log "Creating Docker network..."
@@ -461,7 +461,7 @@ configure_docker() {
 }
 EOF
 
-#    systemctl restart docker
+systemctl restart docker
 }
 
 # =============================================================================
@@ -489,10 +489,10 @@ setup_openvpn_server() {
     cd $SYSTEM_DIR/openvpn
     
     # Download Easy-RSA
-# [patched out for stable re-run]     log "Downloading Easy-RSA..."
-# [patched out for stable re-run]     wget -q https://github.com/OpenVPN/easy-rsa/releases/download/v3.1.0/EasyRSA-3.1.0.tgz
-# [patched out for stable re-run]     tar xzf EasyRSA-3.1.0.tgz
-# [patched out for stable re-run]     mv EasyRSA-3.1.0/* easy-rsa/
+    log "Downloading Easy-RSA..."
+    wget -q https://github.com/OpenVPN/easy-rsa/releases/download/v3.1.0/EasyRSA-3.1.0.tgz
+    tar xzf EasyRSA-3.1.0.tgz
+    mv EasyRSA-3.1.0/* easy-rsa/
     rm -rf EasyRSA-3.1.0*
     
     # Configure Easy-RSA
@@ -511,28 +511,17 @@ EOF
     
     # Initialize PKI
 
-    # Patch: Detect correct path to easyrsa
-    EASYRSA_CMD="./easyrsa"
-    if [ ! -x "$EASYRSA_CMD" ]; then
-      if [ -x "/usr/share/easy-rsa/easyrsa" ]; then
-        EASYRSA_CMD="/usr/share/easy-rsa/easyrsa"
-      elif command -v easyrsa >/dev/null 2>&1; then
-        EASYRSA_CMD="$(command -v easyrsa)"
-      else
-        echo "Easy-RSA executable not found!"
-        exit 1
-      fi
     fi
 
-    $EASYRSA_CMD init-pki
-    echo "MikroTik-VPN-CA" | $EASYRSA_CMD build-ca nopass
+    ./easyrsa init-pki
+    echo "MikroTik-VPN-CA" | ./easyrsa build-ca nopass
     
     # Generate server certificate
-    $EASYRSA_CMD gen-req vpn-server nopass
-    $EASYRSA_CMD sign-req server vpn-server
+    ./easyrsa gen-req vpn-server nopass
+    ./easyrsa sign-req server vpn-server
     
     # Generate DH parameters
-    $EASYRSA_CMD gen-dh
+    ./easyrsa gen-dh
     
     # Generate TLS auth key
     openvpn --genkey secret ta.key
@@ -1164,7 +1153,7 @@ services:
     networks:
       - mikrotik-vpn-net
     healthcheck:
-# [patched out for stable re-run]       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost"]
       interval: 30s
       timeout: 10s
       retries: 3
