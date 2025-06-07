@@ -421,9 +421,9 @@ phase2_docker_installation() {
     usermod -aG docker mikrotik-vpn
     
     # Start Docker
-    log "Starting Docker..."
-    systemctl enable docker
-    systemctl start docker
+#    log "Starting Docker..."
+#    systemctl enable docker
+#    systemctl start docker
     
     # Create Docker network
     log "Creating Docker network..."
@@ -461,7 +461,7 @@ configure_docker() {
 }
 EOF
 
-    systemctl restart docker
+#    systemctl restart docker
 }
 
 # =============================================================================
