@@ -837,8 +837,11 @@ EOF
 }
 
 setup_redis() {
-    # Create Redis configuration
-source /opt/mikrotik-vpn/configs/setup.env
+    # Load environment variables first
+    if [ -f "/opt/mikrotik-vpn/configs/setup.env" ]; then
+        source /opt/mikrotik-vpn/configs/setup.env
+    fi
+
     cat << EOF > $SYSTEM_DIR/redis/redis.conf
 # Redis Configuration
 bind 0.0.0.0
@@ -899,7 +902,7 @@ services:
     container_name: mikrotik-redis-commander
     restart: unless-stopped
     environment:
-      - REDIS_HOSTS=local:redis:6379:0:${REDIS_PASSWORD}
+      - REDIS_HOSTS=local:redis:6379:0:$REDIS_PASSWORD
       - HTTP_USER=admin
       - HTTP_PASSWORD=$REDIS_PASSWORD
     ports:
@@ -1781,7 +1784,7 @@ groups:
           severity: warning
         annotations:
           summary: "High memory usage detected"
-          description: "Memory usage is above 85% (current value: {{ $value }}%)"
+          description: "Memory usage is above 85% (current value: {{ \$value }}%)"
 
       - alert: DiskSpaceLow
         expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 20
@@ -1790,7 +1793,7 @@ groups:
           severity: critical
         annotations:
           summary: "Low disk space"
-          description: "Disk space is below 20% (current value: {{ $value }}%)"
+          description: "Disk space is below 20% (current value: {{ \$value }}%)"
 
       - alert: ServiceDown
         expr: up == 0
@@ -1799,7 +1802,7 @@ groups:
           severity: critical
         annotations:
           summary: "Service is down"
-          description: "{{ $labels.job }} on {{ $labels.instance }} is down"
+          description: "{{ \$labels.job }} on {{ \$labels.instance }} is down"
 
   - name: vpn_alerts
     interval: 30s
@@ -1811,7 +1814,7 @@ groups:
           severity: warning
         annotations:
           summary: "High VPN connections"
-          description: "VPN connections approaching limit (current: {{ $value }})"
+          description: "VPN connections approaching limit (current: {{ \$value }})"
 
       - alert: VPNServiceDown
         expr: up{job="openvpn"} == 0
@@ -1850,7 +1853,7 @@ groups:
           severity: warning
         annotations:
           summary: "MongoDB high connections"
-          description: "MongoDB has {{ $value }} active connections"
+          description: "MongoDB has {{ \$value }} active connections"
 EOF
 }
 
@@ -2756,7 +2759,7 @@ BACKUP_SIZE=$(du -h $BACKUP_DIR/$BACKUP_TYPE/backup_$DATE.tar.gz | cut -f1)
 # 17. Send notification
 log "Sending backup notification..."
 if command -v mail >/dev/null 2>&1; then
-cat << "MAIL" | mail -s "[MikroTik VPN] Backup Completed - $BACKUP_TYPE" "$ADMIN_EMAIL"
+cat << MAIL | mail -s "[MikroTik VPN] Backup Completed - $BACKUP_TYPE" "$ADMIN_EMAIL"
 Backup completed successfully!
 
 Type: $BACKUP_TYPE
@@ -3201,7 +3204,7 @@ verify_backup() {
     # Check file exists and is readable
     if [ ! -r "$backup_file" ]; then
         log "ERROR: Cannot read backup file"
-FAILED_BACKUPS="${FAILED_BACKUPS}\n${backup_file}"
+        FAILED_BACKUPS="${FAILED_BACKUPS:-}${FAILED_BACKUPS:+\n}${backup_file}"
         return 1
     fi
     
@@ -3209,14 +3212,14 @@ FAILED_BACKUPS="${FAILED_BACKUPS}\n${backup_file}"
     size=$(stat -c%s "$backup_file" 2>/dev/null)
     if [ "$size" -lt 1024 ]; then
         log "ERROR: Backup file too small (${size} bytes)"
-FAILED_BACKUPS="${FAILED_BACKUPS}\n${backup_file}"
+        FAILED_BACKUPS="${FAILED_BACKUPS:-}${FAILED_BACKUPS:+\n}${backup_file}"
         return 1
     fi
     
     # Verify tar integrity
     if ! tar -tzf "$backup_file" >/dev/null 2>&1; then
         log "ERROR: Backup file is corrupted"
-FAILED_BACKUPS="${FAILED_BACKUPS}\n${backup_file}"
+        FAILED_BACKUPS="${FAILED_BACKUPS:-}${FAILED_BACKUPS:+\n}${backup_file}"
         return 1
     fi
     
@@ -3901,7 +3904,7 @@ print_ok() {
 print_warning() {
     echo -e "${YELLOW}⚠${NC} $1"
     log "⚠ $1"
-WARNING_CHECKS="${WARNING_CHECKS}\n- $1"
+    WARNING_CHECKS="${WARNING_CHECKS:-}${WARNING_CHECKS:+\n}- $1"
 }
 
 print_fail() {
@@ -4281,7 +4284,11 @@ main() {
 
 # Run main function
 # Run main function
+# Run main function
 main "$@"
 
+# Exit successfully
+exit 0
+
+
 # Exit with proper code
-exit $?
