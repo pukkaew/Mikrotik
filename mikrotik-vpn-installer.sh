@@ -83,16 +83,14 @@ get_user_input() {
     # Domain configuration
     while true; do
         read -p "Enter your domain name (e.g., vpn.yourcompany.com): " DOMAIN_NAME
-        DOMAIN_NAME=$(echo "$DOMAIN_NAME" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        DOMAIN_NAME=$(echo "$DOMAIN_NAME" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//g')
         
         if [ -z "$DOMAIN_NAME" ]; then
             echo "Domain name cannot be empty. Please try again."
             continue
         fi
         
-        if [[ $DOMAIN_NAME =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$ ]] && \
-           [[ ! $DOMAIN_NAME =~ \.\. ]] && \
-           [[ ${#DOMAIN_NAME} -le 255 ]]; then
+if [[ $DOMAIN_NAME =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] && [[ ${#DOMAIN_NAME} -le 255 ]]; then
             break
         else
             echo "Invalid domain name format. Please enter a valid domain."
@@ -692,7 +690,7 @@ cd $SYSTEM_DIR/openvpn/easy-rsa
 mkdir -p $SYSTEM_DIR/clients
 
 # Create client configuration
-cat << EOC > $SYSTEM_DIR/clients/$CLIENT_NAME.ovpn
+cat << EOF > $SYSTEM_DIR/clients/$CLIENT_NAME.ovpn
 client
 dev tun
 proto udp
@@ -723,7 +721,7 @@ $(cat pki/private/$CLIENT_NAME.key)
 $(cat ta.key)
 </tls-auth>
 key-direction 1
-EOC
+EOF
 
 echo "Client configuration created: $SYSTEM_DIR/clients/$CLIENT_NAME.ovpn"
 EOF
@@ -840,6 +838,7 @@ EOF
 
 setup_redis() {
     # Create Redis configuration
+source /opt/mikrotik-vpn/configs/setup.env
     cat << EOF > $SYSTEM_DIR/redis/redis.conf
 # Redis Configuration
 bind 0.0.0.0
@@ -900,7 +899,7 @@ services:
     container_name: mikrotik-redis-commander
     restart: unless-stopped
     environment:
-      - REDIS_HOSTS=local:redis:6379:0:$REDIS_PASSWORD
+      - REDIS_HOSTS=local:redis:6379:0:${REDIS_PASSWORD}
       - HTTP_USER=admin
       - HTTP_PASSWORD=$REDIS_PASSWORD
     ports:
@@ -1009,7 +1008,7 @@ server {
     
     # Redirect all other HTTP traffic to HTTPS
     location / {
-        return 301 https://\$server_name\$request_uri;
+        return 301 https://\\$server_name\\$request_uri;
     }
 }
 
@@ -1773,7 +1772,7 @@ groups:
           severity: warning
         annotations:
           summary: "High CPU usage detected"
-          description: "CPU usage is above 80% (current value: {{ $value }}%)"
+          description: "CPU usage is above 80% (current value: {{ \$value }}%)"
 
       - alert: HighMemoryUsage
         expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
@@ -2353,6 +2352,7 @@ harden_ssh() {
     ssh-keygen -A
 
 # Create hardened SSH configuration
+ssh-keygen -A
     cat << EOF > /etc/ssh/sshd_config.d/99-mikrotik-vpn-hardening.conf
 # SSH Hardening for MikroTik VPN System
 Port $SSH_PORT
@@ -2398,7 +2398,7 @@ ClientAliveCountMax 2
 UseDNS no
 
 # User restrictions
-AllowUsers mikrotik-vpn ${SUDO_USER:-root}
+AllowUsers mikrotik-vpn \${SUDO_USER:-root}
 
 # Logging
 SyslogFacility AUTH
@@ -2756,7 +2756,7 @@ BACKUP_SIZE=$(du -h $BACKUP_DIR/$BACKUP_TYPE/backup_$DATE.tar.gz | cut -f1)
 # 17. Send notification
 log "Sending backup notification..."
 if command -v mail >/dev/null 2>&1; then
-    cat << MAIL | mail -s "[MikroTik VPN] Backup Completed - $BACKUP_TYPE" $ADMIN_EMAIL
+cat << "MAIL" | mail -s "[MikroTik VPN] Backup Completed - $BACKUP_TYPE" "$ADMIN_EMAIL"
 Backup completed successfully!
 
 Type: $BACKUP_TYPE
@@ -3201,7 +3201,7 @@ verify_backup() {
     # Check file exists and is readable
     if [ ! -r "$backup_file" ]; then
         log "ERROR: Cannot read backup file"
-        FAILED_BACKUPS="$FAILED_BACKUPS\n$backup_file"
+FAILED_BACKUPS="${FAILED_BACKUPS}\n${backup_file}"
         return 1
     fi
     
@@ -3209,14 +3209,14 @@ verify_backup() {
     size=$(stat -c%s "$backup_file" 2>/dev/null)
     if [ "$size" -lt 1024 ]; then
         log "ERROR: Backup file too small (${size} bytes)"
-        FAILED_BACKUPS="$FAILED_BACKUPS\n$backup_file"
+FAILED_BACKUPS="${FAILED_BACKUPS}\n${backup_file}"
         return 1
     fi
     
     # Verify tar integrity
     if ! tar -tzf "$backup_file" >/dev/null 2>&1; then
         log "ERROR: Backup file is corrupted"
-        FAILED_BACKUPS="$FAILED_BACKUPS\n$backup_file"
+FAILED_BACKUPS="${FAILED_BACKUPS}\n${backup_file}"
         return 1
     fi
     
@@ -3901,7 +3901,7 @@ print_ok() {
 print_warning() {
     echo -e "${YELLOW}⚠${NC} $1"
     log "⚠ $1"
-    WARNING_CHECKS="$WARNING_CHECKS\n- $1"
+WARNING_CHECKS="${WARNING_CHECKS}\n- $1"
 }
 
 print_fail() {
@@ -4280,4 +4280,8 @@ main() {
 }
 
 # Run main function
+# Run main function
 main "$@"
+
+# Exit with proper code
+exit $?
