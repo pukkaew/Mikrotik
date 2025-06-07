@@ -511,7 +511,6 @@ EOF
     
     # Initialize PKI
 
-    fi
 
     ./easyrsa init-pki
     echo "MikroTik-VPN-CA" | ./easyrsa build-ca nopass
