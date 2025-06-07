@@ -520,6 +520,13 @@ VARS_EOF
     mv EasyRSA-3.1.0/* easy-rsa/
     rm -rf EasyRSA-3.1.0*
     cd easy-rsa
+    rm -rf easy-rsa
+    mkdir -p easy-rsa
+    wget -q https://github.com/OpenVPN/easy-rsa/releases/download/v3.1.0/EasyRSA-3.1.0.tgz
+    tar xzf EasyRSA-3.1.0.tgz
+    mv EasyRSA-3.1.0/* easy-rsa/
+    rm -rf EasyRSA-3.1.0*
+    cd easy-rsa
     # ลบ directory เดิม (ถ้ามี) เพื่อป้องกัน conflict
     rm -rf easy-rsa
     mkdir -p easy-rsa
@@ -680,7 +687,7 @@ EOF
 
 create_vpn_management_scripts() {
     # VPN client generator script
-    cat << 'EOF' > $SCRIPT_DIR/generate-vpn-client.sh
+    cat << 'SCRIPT_EOF' > $SCRIPT_DIR/generate-vpn-client.sh
 #!/bin/bash
 # VPN Client Configuration Generator
 
@@ -709,7 +716,7 @@ cd $SYSTEM_DIR/openvpn/easy-rsa
 mkdir -p $SYSTEM_DIR/clients
 
 # Create client configuration
-cat << EOF > $SYSTEM_DIR/clients/$CLIENT_NAME.ovpn
+cat << OVPN_EOF > $SYSTEM_DIR/clients/$CLIENT_NAME.ovpn
 client
 dev tun
 proto udp
@@ -740,9 +747,9 @@ $(cat pki/private/$CLIENT_NAME.key)
 $(cat ta.key)
 </tls-auth>
 key-direction 1
-EOF
 
 echo "Client configuration created: $SYSTEM_DIR/clients/$CLIENT_NAME.ovpn"
+SCRIPT_EOF
 EOF
     
     chmod +x $SCRIPT_DIR/generate-vpn-client.sh
@@ -1686,7 +1693,7 @@ EOF
     
     # Create placeholder route files
     for route in auth devices users vouchers monitoring admin; do
-        cat << 'EOF' > $SYSTEM_DIR/app/routes/$route.js
+    cat << EOF > $SYSTEM_DIR/app/routes/$route.js
 const express = require('express');
 const router = express.Router();
 
