@@ -410,8 +410,8 @@ phase2_docker_installation() {
     apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     
     # Configure Docker
-log "Configuring Docker..."
-configure_docker
+# log "Configuring Docker..."
+# configure_docker
     
     # Add users to docker group
     log "Adding users to docker group..."
@@ -486,6 +486,9 @@ phase3_vpn_server_setup() {
 }
 
 setup_openvpn_server() {
+    cd $SYSTEM_DIR/openvpn
+    
+    # Download Easy-RSA
     log "Downloading Easy-RSA..."
     rm -rf easy-rsa
     mkdir -p easy-rsa
@@ -495,7 +498,7 @@ setup_openvpn_server() {
     rm -rf EasyRSA-3.1.0*
     cd easy-rsa
     ./easyrsa init-pki
-    cat << VARS_EOF > pki/vars
+    cat << 'VARS_EOF' > pki/vars
 set_var EASYRSA_REQ_COUNTRY    "TH"
 set_var EASYRSA_REQ_PROVINCE   "Bangkok"
 set_var EASYRSA_REQ_CITY       "Bangkok"
@@ -510,8 +513,49 @@ VARS_EOF
     EASYRSA_BATCH=1 EASYRSA_REQ_CN="vpn-server" ./easyrsa gen-req vpn-server nopass
     EASYRSA_BATCH=1 ./easyrsa sign-req server vpn-server
     ./easyrsa gen-dh
+    rm -rf easy-rsa
+    mkdir -p easy-rsa
+    wget -q https://github.com/OpenVPN/easy-rsa/releases/download/v3.1.0/EasyRSA-3.1.0.tgz
+    tar xzf EasyRSA-3.1.0.tgz
+    mv EasyRSA-3.1.0/* easy-rsa/
+    rm -rf EasyRSA-3.1.0*
+    cd easy-rsa
+    rm -rf easy-rsa
+    mkdir -p easy-rsa
+    wget -q https://github.com/OpenVPN/easy-rsa/releases/download/v3.1.0/EasyRSA-3.1.0.tgz
+    tar xzf EasyRSA-3.1.0.tgz
+    mv EasyRSA-3.1.0/* easy-rsa/
+    rm -rf EasyRSA-3.1.0*
+    cd easy-rsa
+    # ลบ directory เดิม (ถ้ามี) เพื่อป้องกัน conflict
+    rm -rf easy-rsa
+    mkdir -p easy-rsa
+    wget -q https://github.com/OpenVPN/easy-rsa/releases/download/v3.1.0/EasyRSA-3.1.0.tgz
+    tar xzf EasyRSA-3.1.0.tgz
+    mv EasyRSA-3.1.0/* easy-rsa/
+    rm -rf EasyRSA-3.1.0*
+    
+    # Configure Easy-RSA
+    cd easy-rsa
+    
+    # Initialize PKI
+
+
+    
+    # Generate server certificate
+    
+    # Generate DH parameters
+    
+    # Generate TLS auth key
     openvpn --genkey secret ta.key
+    
+    # Create server configuration
     create_openvpn_config
+    
+    # Create Docker Compose for OpenVPN
+    create_openvpn_compose
+    
+    chown -R mikrotik-vpn:mikrotik-vpn $SYSTEM_DIR/openvpn
 }
 
 create_openvpn_config() {
@@ -705,10 +749,8 @@ $(cat ta.key)
 key-direction 1
 OVPN_EOF
 OVPN_EOF
-OVPN_EOF
 
 echo "Client configuration created: $SYSTEM_DIR/clients/$CLIENT_NAME.ovpn"
-SCRIPT_EOF
 SCRIPT_EOF
 SCRIPT_EOF
 SCRIPT_EOF
