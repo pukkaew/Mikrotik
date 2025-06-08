@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
-# MikroTik VPN Management System - Complete Installation Script
-# Version: 2.0
-# Compatible with: Ubuntu 22.04 LTS
+# MikroTik VPN Management System - Complete Installation Script (Fixed)
+# Version: 3.0
+# Compatible with: Ubuntu 22.04/24.04 LTS
 # Description: Complete VPN-based Hotspot Management Solution
 # =============================================================================
 
@@ -156,26 +156,20 @@ get_user_input() {
     done
     
     # MongoDB app password
-    while true; do
-        read -s -p "Enter MongoDB app password: " MONGO_APP_PASSWORD
-        echo
-        if [ ${#MONGO_APP_PASSWORD} -ge 8 ]; then
-            break
-        else
-            echo "Password must be at least 8 characters long."
-        fi
-    done
+    read -s -p "Enter MongoDB app password: " MONGO_APP_PASSWORD
+    echo
+    if [ -z "$MONGO_APP_PASSWORD" ]; then
+        MONGO_APP_PASSWORD=$(openssl rand -base64 16)
+        echo "Generated MongoDB app password: $MONGO_APP_PASSWORD"
+    fi
     
     # Redis password
-    while true; do
-        read -s -p "Enter Redis password: " REDIS_PASSWORD
-        echo
-        if [ ${#REDIS_PASSWORD} -ge 8 ]; then
-            break
-        else
-            echo "Password must be at least 8 characters long."
-        fi
-    done
+    read -s -p "Enter Redis password: " REDIS_PASSWORD
+    echo
+    if [ -z "$REDIS_PASSWORD" ]; then
+        REDIS_PASSWORD=$(openssl rand -base64 16)
+        echo "Generated Redis password: $REDIS_PASSWORD"
+    fi
     
     # Save configuration
     save_configuration
@@ -409,21 +403,12 @@ phase2_docker_installation() {
     apt update
     apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     
-    # Configure Docker
-    # log "Configuring Docker..."
-    # configure_docker
-    
     # Add users to docker group
     log "Adding users to docker group..."
     if [ -n "$SUDO_USER" ]; then
         usermod -aG docker $SUDO_USER
     fi
     usermod -aG docker mikrotik-vpn
-    
-    # Start Docker
-    # log "Starting Docker..."
-    # systemctl enable docker
-    # systemctl start docker
     
     # Create Docker network
     log "Creating Docker network..."
@@ -504,9 +489,6 @@ EOF
     # Create server configuration
     create_openvpn_config
     
-    # Create Docker Compose for OpenVPN
-    create_openvpn_compose
-    
     chown -R mikrotik-vpn:mikrotik-vpn $SYSTEM_DIR/openvpn
 }
 
@@ -563,67 +545,9 @@ management localhost 7505
 EOF
 }
 
-create_openvpn_compose() {
-    cat << 'EOF' > $SYSTEM_DIR/docker-compose-openvpn.yml
-version: '3.8'
-
-services:
-  openvpn:
-    image: kylemanna/openvpn:latest
-    container_name: mikrotik-openvpn
-    cap_add:
-      - NET_ADMIN
-    ports:
-      - "1194:1194/udp"
-      - "127.0.0.1:7505:7505"
-    volumes:
-      - ./openvpn:/etc/openvpn
-      - /var/log/mikrotik-vpn:/var/log
-    restart: unless-stopped
-    networks:
-      - mikrotik-vpn-net
-    environment:
-      - OPENVPN_CONFIG=/etc/openvpn/server/server.conf
-
-networks:
-  mikrotik-vpn-net:
-    external: true
-EOF
-}
-
 setup_l2tp_server() {
     # Generate random PSK
     L2TP_PSK=$(openssl rand -base64 32)
-    
-    cat << EOF > $SYSTEM_DIR/docker-compose-l2tp.yml
-version: '3.8'
-
-services:
-  l2tp-ipsec:
-    image: hwdsl2/ipsec-vpn-server:latest
-    container_name: mikrotik-l2tp
-    cap_add:
-      - NET_ADMIN
-    environment:
-      - VPN_IPSEC_PSK=$L2TP_PSK
-      - VPN_USER=mikrotik
-      - VPN_PASSWORD=$MONGO_ROOT_PASSWORD
-    ports:
-      - "500:500/udp"
-      - "4500:4500/udp"
-      - "1701:1701/udp"
-    volumes:
-      - ./l2tp:/etc/ipsec.d
-      - /lib/modules:/lib/modules:ro
-    restart: unless-stopped
-    networks:
-      - mikrotik-vpn-net
-    privileged: true
-
-networks:
-  mikrotik-vpn-net:
-    external: true
-EOF
     
     # Save L2TP credentials
     cat << EOF > $CONFIG_DIR/l2tp-credentials.txt
@@ -762,56 +686,6 @@ db.vouchers.createIndex({ "code": 1 }, { unique: true });
 db.sessions.createIndex({ "user_id": 1 });
 db.logs.createIndex({ "timestamp": -1 });
 EOF
-    
-    # Create MongoDB Docker Compose
-    cat << EOF > $SYSTEM_DIR/docker-compose-mongodb.yml
-version: '3.8'
-
-services:
-  mongodb:
-    image: mongo:6.0
-    container_name: mikrotik-mongodb
-    restart: unless-stopped
-    environment:
-      - MONGO_INITDB_ROOT_USERNAME=admin
-      - MONGO_INITDB_ROOT_PASSWORD=$MONGO_ROOT_PASSWORD
-      - MONGO_INITDB_DATABASE=mikrotik_vpn
-    volumes:
-      - ./mongodb/data:/data/db
-      - ./mongodb/logs:/var/log/mongodb
-      - ./mongodb/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
-    ports:
-      - "127.0.0.1:27017:27017"
-    command: mongod --auth --bind_ip_all
-    networks:
-      - mikrotik-vpn-net
-    healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-  mongo-express:
-    image: mongo-express:latest
-    container_name: mikrotik-mongo-express
-    restart: unless-stopped
-    environment:
-      - ME_CONFIG_MONGODB_ADMINUSERNAME=admin
-      - ME_CONFIG_MONGODB_ADMINPASSWORD=$MONGO_ROOT_PASSWORD
-      - ME_CONFIG_MONGODB_SERVER=mongodb
-      - ME_CONFIG_BASICAUTH_USERNAME=admin
-      - ME_CONFIG_BASICAUTH_PASSWORD=$MONGO_ROOT_PASSWORD
-    ports:
-      - "127.0.0.1:8081:8081"
-    networks:
-      - mikrotik-vpn-net
-    depends_on:
-      - mongodb
-
-networks:
-  mikrotik-vpn-net:
-    external: true
-EOF
 }
 
 setup_redis() {
@@ -845,50 +719,6 @@ maxmemory-policy allkeys-lru
 tcp-backlog 511
 timeout 0
 tcp-keepalive 300
-EOF
-    
-    # Create Redis Docker Compose
-    cat << EOF > $SYSTEM_DIR/docker-compose-redis.yml
-version: '3.8'
-
-services:
-  redis:
-    image: redis:7-alpine
-    container_name: mikrotik-redis
-    restart: unless-stopped
-    command: redis-server /usr/local/etc/redis/redis.conf
-    volumes:
-      - ./redis/data:/data
-      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
-      - ./redis/logs:/var/log/redis
-    ports:
-      - "127.0.0.1:6379:6379"
-    networks:
-      - mikrotik-vpn-net
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-  redis-commander:
-    image: rediscommander/redis-commander:latest
-    container_name: mikrotik-redis-commander
-    restart: unless-stopped
-    environment:
-      - REDIS_HOSTS=local:redis:6379:0:$REDIS_PASSWORD
-      - HTTP_USER=admin
-      - HTTP_PASSWORD=$REDIS_PASSWORD
-    ports:
-      - "127.0.0.1:8082:8081"
-    networks:
-      - mikrotik-vpn-net
-    depends_on:
-      - redis
-
-networks:
-  mikrotik-vpn-net:
-    external: true
 EOF
 }
 
@@ -1100,43 +930,19 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
-EOF
 
-    # Create Docker Compose for Nginx
-    cat << 'EOF' > $SYSTEM_DIR/docker-compose-nginx.yml
-version: '3.8'
-
-services:
-  nginx:
-    image: nginx:alpine
-    container_name: mikrotik-nginx
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/conf.d:/etc/nginx/conf.d:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
-      - ./nginx/html:/var/www/html:ro
-      - ./nginx/logs:/var/log/nginx
-      - certbot_www:/var/www/certbot:ro
-    networks:
-      - mikrotik-vpn-net
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    depends_on:
-      - app
-
-volumes:
-  certbot_www:
-
-networks:
-  mikrotik-vpn-net:
-    external: true
+# Monitoring status
+server {
+    listen 127.0.0.1:80;
+    server_name localhost;
+    
+    location /nginx_status {
+        stub_status on;
+        access_log off;
+        allow 127.0.0.1;
+        deny all;
+    }
+}
 EOF
 }
 
@@ -1149,29 +955,6 @@ setup_ssl_certificates() {
         -subj "/C=TH/ST=Bangkok/L=Bangkok/O=MikroTik VPN/CN=$DOMAIN_NAME" \
         -addext "subjectAltName=DNS:$DOMAIN_NAME,DNS:admin.$DOMAIN_NAME"
     
-    # Create Certbot Docker Compose
-    cat << EOF > $SYSTEM_DIR/docker-compose-certbot.yml
-version: '3.8'
-
-services:
-  certbot:
-    image: certbot/certbot
-    container_name: mikrotik-certbot
-    volumes:
-      - ./nginx/ssl:/etc/letsencrypt
-      - certbot_www:/var/www/certbot
-    command: certonly --webroot --webroot-path=/var/www/certbot --email $ADMIN_EMAIL --agree-tos --no-eff-email -d $DOMAIN_NAME -d admin.$DOMAIN_NAME
-    networks:
-      - mikrotik-vpn-net
-
-volumes:
-  certbot_www:
-
-networks:
-  mikrotik-vpn-net:
-    external: true
-EOF
-
     # Create SSL renewal script
     cat << 'EOF' > $SCRIPT_DIR/renew-ssl-certificates.sh
 #!/bin/bash
@@ -1189,7 +972,7 @@ log() {
 log "Starting SSL certificate renewal..."
 
 # Renew certificates
-docker compose -f $SYSTEM_DIR/docker-compose-certbot.yml run --rm certbot renew
+docker run --rm -v $SYSTEM_DIR/nginx/ssl:/etc/letsencrypt -v $SYSTEM_DIR/nginx/html:/var/www/certbot certbot/certbot renew
 
 if [ $? -eq 0 ]; then
     log "Certificate renewal successful"
@@ -1350,15 +1133,26 @@ const connectMongoDB = async () => {
 const connectRedis = async () => {
     try {
         const client = redis.createClient({
-            url: `redis://:${process.env.REDIS_PASSWORD}@${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`
+            socket: {
+                host: process.env.REDIS_HOST || 'redis',
+                port: process.env.REDIS_PORT || 6379
+            },
+            password: process.env.REDIS_PASSWORD
         });
         
         client.on('error', (err) => {
             logger.error('Redis Client Error', err);
         });
         
+        client.on('connect', () => {
+            logger.info('Redis client connected');
+        });
+        
+        client.on('ready', () => {
+            logger.info('Redis client ready');
+        });
+        
         await client.connect();
-        logger.info('Connected to Redis');
         return client;
     } catch (error) {
         logger.error('Redis connection error:', error);
@@ -1394,14 +1188,36 @@ app.use(session({
 app.use('/static', express.static(path.join(__dirname, 'public')));
 
 // Health check endpoint
-app.get('/health', (req, res) => {
-    res.status(200).json({
-        status: 'OK',
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime(),
-        mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-        redis: redisClient && redisClient.isOpen ? 'connected' : 'disconnected'
-    });
+app.get('/health', async (req, res) => {
+    try {
+        const mongoStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+        const redisStatus = redisClient && redisClient.isOpen ? 'connected' : 'disconnected';
+        
+        // Test Redis connection
+        let redisTest = false;
+        if (redisClient && redisClient.isOpen) {
+            try {
+                await redisClient.ping();
+                redisTest = true;
+            } catch (e) {
+                logger.error('Redis ping failed:', e);
+            }
+        }
+        
+        res.status(200).json({
+            status: 'OK',
+            timestamp: new Date().toISOString(),
+            uptime: process.uptime(),
+            mongodb: mongoStatus,
+            redis: redisStatus,
+            redisTest: redisTest
+        });
+    } catch (error) {
+        res.status(500).json({
+            status: 'ERROR',
+            error: error.message
+        });
+    }
 });
 
 // Basic routes
@@ -1598,42 +1414,6 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 
 # Start application
 CMD ["npm", "start"]
-EOF
-
-    # Create Docker Compose for application
-    cat << 'EOF' > $SYSTEM_DIR/docker-compose-app.yml
-version: '3.8'
-
-services:
-  app:
-    build: 
-      context: ./app
-      dockerfile: Dockerfile
-    container_name: mikrotik-app
-    restart: unless-stopped
-    environment:
-      - NODE_ENV=production
-      - PORT=3000
-    ports:
-      - "127.0.0.1:3000:3000"
-    volumes:
-      - ./app:/usr/src/app
-      - /usr/src/app/node_modules
-      - ./logs:/var/log/mikrotik-vpn
-    networks:
-      - mikrotik-vpn-net
-    depends_on:
-      - mongodb
-      - redis
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-networks:
-  mikrotik-vpn-net:
-    external: true
 EOF
 
     # Create basic route files structure
@@ -2025,151 +1805,6 @@ inhibit_rules:
       severity: 'warning'
     equal: ['alertname', 'dev', 'instance']
 EOF
-
-    # Create monitoring Docker Compose
-    cat << EOF > $SYSTEM_DIR/docker-compose-monitoring.yml
-version: '3.8'
-
-services:
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: mikrotik-prometheus
-    restart: unless-stopped
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.enable-lifecycle'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
-    volumes:
-      - ./monitoring/prometheus:/etc/prometheus
-      - prometheus_data:/prometheus
-    ports:
-      - "127.0.0.1:9090:9090"
-    networks:
-      - mikrotik-vpn-net
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: mikrotik-grafana
-    restart: unless-stopped
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=$MONGO_ROOT_PASSWORD
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
-    ports:
-      - "127.0.0.1:3001:3000"
-    networks:
-      - mikrotik-vpn-net
-    depends_on:
-      - prometheus
-
-  node-exporter:
-    image: prom/node-exporter:latest
-    container_name: mikrotik-node-exporter
-    restart: unless-stopped
-    command:
-      - '--path.procfs=/host/proc'
-      - '--path.sysfs=/host/sys'
-      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/)'
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-    ports:
-      - "127.0.0.1:9100:9100"
-    networks:
-      - mikrotik-vpn-net
-
-  cadvisor:
-    image: gcr.io/cadvisor/cadvisor:latest
-    container_name: mikrotik-cadvisor
-    restart: unless-stopped
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-      - /dev/disk/:/dev/disk:ro
-    devices:
-      - /dev/kmsg
-    ports:
-      - "127.0.0.1:8080:8080"
-    networks:
-      - mikrotik-vpn-net
-    privileged: true
-
-  alertmanager:
-    image: prom/alertmanager:latest
-    container_name: mikrotik-alertmanager
-    restart: unless-stopped
-    volumes:
-      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-      - alertmanager_data:/alertmanager
-    command:
-      - '--config.file=/etc/alertmanager/alertmanager.yml'
-      - '--storage.path=/alertmanager'
-    ports:
-      - "127.0.0.1:9093:9093"
-    networks:
-      - mikrotik-vpn-net
-
-  mongodb-exporter:
-    image: percona/mongodb_exporter:0.35
-    container_name: mikrotik-mongodb-exporter
-    restart: unless-stopped
-    environment:
-      - MONGODB_URI=mongodb://admin:$MONGO_ROOT_PASSWORD@mongodb:27017
-    ports:
-      - "127.0.0.1:9216:9216"
-    networks:
-      - mikrotik-vpn-net
-    depends_on:
-      - mongodb
-
-  redis-exporter:
-    image: oliver006/redis_exporter:latest
-    container_name: mikrotik-redis-exporter
-    restart: unless-stopped
-    environment:
-      - REDIS_ADDR=redis:6379
-      - REDIS_PASSWORD=$REDIS_PASSWORD
-    ports:
-      - "127.0.0.1:9121:9121"
-    networks:
-      - mikrotik-vpn-net
-    depends_on:
-      - redis
-
-  nginx-exporter:
-    image: nginx/nginx-prometheus-exporter:latest
-    container_name: mikrotik-nginx-exporter
-    restart: unless-stopped
-    command:
-      - '-nginx.scrape-uri=http://nginx/nginx_status'
-    ports:
-      - "127.0.0.1:9113:9113"
-    networks:
-      - mikrotik-vpn-net
-    depends_on:
-      - nginx
-
-volumes:
-  prometheus_data:
-  grafana_data:
-  alertmanager_data:
-
-networks:
-  mikrotik-vpn-net:
-    external: true
-EOF
-
-    chown -R mikrotik-vpn:mikrotik-vpn $SYSTEM_DIR/monitoring
 }
 
 # =============================================================================
@@ -2210,10 +1845,7 @@ setup_firewall() {
     ufw default deny incoming
     ufw default allow outgoing
     
-    # Allow SSH (check if SSH_PORT is set)
-    if [ -z "$SSH_PORT" ]; then
-        SSH_PORT=22
-    fi
+    # Allow SSH
     ufw allow $SSH_PORT/tcp comment 'SSH'
     
     # Allow web traffic
@@ -2227,11 +1859,9 @@ setup_firewall() {
     ufw allow 1701/udp comment 'L2TP'
     
     # Allow monitoring (from VPN network only)
-    if [ -n "$VPN_NETWORK" ]; then
-        VPN_SUBNET=$(echo $VPN_NETWORK | cut -d'/' -f1 | cut -d'.' -f1-3).0/24
-        ufw allow from $VPN_SUBNET to any port 9090 comment 'Prometheus'
-        ufw allow from $VPN_SUBNET to any port 3001 comment 'Grafana'
-    fi
+    VPN_SUBNET=$(echo $VPN_NETWORK | cut -d'/' -f1 | cut -d'.' -f1-3).0/24
+    ufw allow from $VPN_SUBNET to any port 9090 comment 'Prometheus'
+    ufw allow from $VPN_SUBNET to any port 3001 comment 'Grafana'
     
     # Allow Docker bridge network
     ufw allow from 172.20.0.0/16 comment 'Docker network'
@@ -2244,32 +1874,14 @@ setup_firewall() {
 }
 
 setup_fail2ban() {
-    # Check if fail2ban is installed
-    if ! command -v fail2ban-client >/dev/null 2>&1; then
-        log "Installing Fail2ban..."
-        apt install -y fail2ban
-    fi
-    
-    # Ensure SSH_PORT is set
-    if [ -z "$SSH_PORT" ]; then
-        SSH_PORT=22
-    fi
-    
-    # Ensure VPN_SUBNET is set
-    if [ -n "$VPN_NETWORK" ]; then
-        VPN_SUBNET=$(echo $VPN_NETWORK | cut -d'/' -f1 | cut -d'.' -f1-3).0/24
-    else
-        VPN_SUBNET="10.8.0.0/24"
-    fi
-    
     # Create custom jail configuration
     cat << EOF > /etc/fail2ban/jail.local
 [DEFAULT]
 bantime = 3600
 findtime = 600
 maxretry = 5
-destemail = ${ADMIN_EMAIL:-admin@localhost}
-sender = fail2ban@${DOMAIN_NAME:-localhost}
+destemail = $ADMIN_EMAIL
+sender = fail2ban@$DOMAIN_NAME
 action = %(action_mwl)s
 ignoreip = 127.0.0.1/8 ::1 $VPN_SUBNET
 
@@ -2404,11 +2016,6 @@ harden_ssh() {
     # Ensure SSH config directory exists
     mkdir -p /etc/ssh/sshd_config.d/
     
-    # Ensure SSH_PORT is set
-    if [ -z "$SSH_PORT" ]; then
-        SSH_PORT=22
-    fi
-    
     # Get current user
     CURRENT_USER=${SUDO_USER:-$(whoami)}
     
@@ -2523,11 +2130,6 @@ setup_intrusion_detection() {
     # Setup AIDE
     log "Setting up AIDE..."
     
-    # Install AIDE if not installed
-    if ! command -v aide >/dev/null 2>&1; then
-        apt install -y aide aide-common
-    fi
-    
     # Initialize AIDE database
     if [ ! -f "/var/lib/aide/aide.db" ]; then
         log "Initializing AIDE database (this may take a while)..."
@@ -2558,11 +2160,6 @@ EOF
     
     # Setup ClamAV
     log "Setting up ClamAV..."
-    
-    # Install ClamAV if not installed
-    if ! command -v clamscan >/dev/null 2>&1; then
-        apt install -y clamav clamav-daemon
-    fi
     
     # Stop services to update
     systemctl stop clamav-freshclam 2>/dev/null || true
@@ -2629,24 +2226,6 @@ EOF
     
     # Setup rkhunter
     log "Setting up rkhunter..."
-    
-    # Install rkhunter if not installed
-    if ! command -v rkhunter >/dev/null 2>&1; then
-        apt install -y rkhunter
-    fi
-    
-    # Fix rkhunter configuration
-    if [ -f "/etc/rkhunter.conf" ]; then
-        # Backup original
-        cp /etc/rkhunter.conf /etc/rkhunter.conf.backup
-        
-        # Fix common issues
-        sed -i 's|^WEB_CMD="/bin/false"|#WEB_CMD="/bin/false"|g' /etc/rkhunter.conf
-        sed -i 's|^WEB_CMD=.*|WEB_CMD=""|g' /etc/rkhunter.conf
-        
-        # Disable some checks that might cause issues
-        echo "DISABLE_TESTS=suspscan hidden_ports hidden_procs deleted_files packet_cap_apps apps" >> /etc/rkhunter.conf
-    fi
     
     # Update rkhunter
     log "Updating rkhunter..."
@@ -2722,16 +2301,6 @@ PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 EOF
     
     log "Intrusion detection setup completed"
-}
-
-# Add helper function for warnings if not exists
-log_warning() {
-    echo -e "${YELLOW}[$(date '+%Y-%m-%d %H:%M:%S')] WARNING:${NC} $1" | tee -a $LOG_DIR/setup.log
-}
-
-# Add helper function for errors if not exists
-log_error() {
-    echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')] ERROR:${NC} $1" | tee -a $LOG_DIR/setup.log
 }
 
 # =============================================================================
@@ -3112,14 +2681,14 @@ restore_backup() {
     # Stop all services
     log "Stopping all services..."
     cd $SYSTEM_DIR
-    $SCRIPT_DIR/stop-all-services.sh || true
+    docker compose down || true
     
     # Give services time to stop
     sleep 10
     
     # Restore MongoDB
     log "Restoring MongoDB..."
-    docker compose -f docker-compose-mongodb.yml up -d
+    docker compose up -d mongodb
     
     # Wait for MongoDB to be ready
     for i in {1..30}; do
@@ -3144,14 +2713,14 @@ restore_backup() {
     
     # Restore Redis
     log "Restoring Redis..."
-    docker compose -f docker-compose-redis.yml down
+    docker compose down redis
     if [ -f "$backup_dir/redis_dump.rdb" ]; then
         docker run --rm -v mikrotik-redis-data:/data alpine \
             sh -c "rm -f /data/dump.rdb /data/appendonly.aof"
         docker cp $backup_dir/redis_dump.rdb mikrotik-redis:/data/dump.rdb 2>/dev/null || true
         docker cp $backup_dir/redis_appendonly.aof mikrotik-redis:/data/appendonly.aof 2>/dev/null || true
     fi
-    docker compose -f docker-compose-redis.yml up -d
+    docker compose up -d redis
     
     # Restore SSL certificates
     log "Restoring SSL certificates..."
@@ -3188,7 +2757,7 @@ restore_backup() {
     # Start all services
     log "Starting all services..."
     cd $SYSTEM_DIR
-    $SCRIPT_DIR/start-all-services.sh
+    docker compose up -d
     
     # Wait for services to stabilize
     log "Waiting for services to stabilize..."
@@ -3488,18 +3057,18 @@ This guide provides procedures for recovering the MikroTik VPN Management System
 ### 1. Complete System Failure
 1. Install fresh Ubuntu 22.04 LTS
 2. Download installation script
-3. Run: sudo ./mikrotik-vpn-installer-fixed.sh
+3. Run: sudo ./mikrotik-vpn-installer-complete.sh
 4. Restore from backup: sudo /opt/mikrotik-vpn/scripts/restore-system.sh restore <backup_file>
 
 ### 2. Database Corruption
-1. Stop affected database: docker compose -f docker-compose-mongodb.yml down
+1. Stop affected database: docker compose stop mongodb
 2. Restore database from backup
-3. Start database: docker compose -f docker-compose-mongodb.yml up -d
+3. Start database: docker compose start mongodb
 
 ### 3. Service Failure
 1. Check service status: docker ps -a
 2. View logs: docker logs <container_name>
-3. Restart service: docker compose -f docker-compose-<service>.yml restart
+3. Restart service: docker compose restart <service_name>
 
 ### 4. Network Issues
 1. Check firewall: sudo ufw status
@@ -3547,11 +3116,7 @@ log "Starting emergency recovery..."
 # 1. Stop all services
 log "Stopping all services..."
 cd $SYSTEM_DIR
-for compose_file in docker-compose-*.yml; do
-    if [ -f "$compose_file" ]; then
-        docker compose -f "$compose_file" down 2>/dev/null || true
-    fi
-done
+docker compose down
 
 # 2. Clean up Docker
 log "Cleaning up Docker..."
@@ -3565,10 +3130,8 @@ docker network create mikrotik-vpn-net --driver bridge --subnet=172.20.0.0/16
 
 # 4. Start core services only
 log "Starting core services..."
-docker compose -f docker-compose-mongodb.yml up -d
-sleep 10
-docker compose -f docker-compose-redis.yml up -d
-sleep 5
+docker compose up -d mongodb redis
+sleep 15
 
 # 5. Verify core services
 if docker ps | grep -q mikrotik-mongodb && docker ps | grep -q mikrotik-redis; then
@@ -3580,10 +3143,7 @@ fi
 
 # 6. Start remaining services
 log "Starting remaining services..."
-docker compose -f docker-compose-openvpn.yml up -d
-docker compose -f docker-compose-app.yml up -d
-docker compose -f docker-compose-nginx.yml up -d
-docker compose -f docker-compose-monitoring.yml up -d
+docker compose up -d
 
 # 7. Health check
 sleep 30
@@ -3606,6 +3166,9 @@ phase10_management_scripts() {
     
     log "Creating management scripts..."
     create_management_scripts
+    
+    log "Creating unified Docker Compose..."
+    create_unified_compose
     
     log "Setting up system service..."
     setup_system_service
@@ -3647,7 +3210,7 @@ fi
 # Functions
 print_header() {
     echo -e "${CYAN}======================================================================${NC}"
-    echo -e "${CYAN}              MikroTik VPN Management System v2.0${NC}"
+    echo -e "${CYAN}              MikroTik VPN Management System v3.0${NC}"
     echo -e "${CYAN}======================================================================${NC}"
     echo
 }
@@ -3842,7 +3405,7 @@ view_logs() {
         "all")
             print_status "Viewing all logs..."
             cd $SYSTEM_DIR
-            docker compose -f docker-compose-*.yml logs -f
+            docker compose logs -f
             ;;
         
         "app")
@@ -3917,7 +3480,7 @@ main() {
         "update")
             print_status "Checking for updates..."
             cd $SYSTEM_DIR
-            docker compose -f docker-compose-*.yml pull
+            docker compose pull
             restart_all_services
             print_status "System updated"
             ;;
@@ -3984,26 +3547,22 @@ echo "Starting MikroTik VPN services..."
 # Create network
 docker network create mikrotik-vpn-net --driver bridge --subnet=172.20.0.0/16 2>/dev/null || true
 
-# Start in dependency order
-echo "Starting databases..."
-docker compose -f docker-compose-mongodb.yml up -d
-docker compose -f docker-compose-redis.yml up -d
+# Load environment variables
+if [ -f "$SYSTEM_DIR/.env" ]; then
+    export $(cat $SYSTEM_DIR/.env | grep -v '^#' | xargs)
+fi
 
-echo "Waiting for databases..."
-sleep 15
+# Start all services using unified compose
+echo "Starting all services..."
+docker compose up -d
 
-echo "Starting VPN services..."
-docker compose -f docker-compose-openvpn.yml up -d
-docker compose -f docker-compose-l2tp.yml up -d
+# Wait for services to be ready
+echo "Waiting for services to be ready..."
+sleep 30
 
-echo "Starting application..."
-docker compose -f docker-compose-app.yml up -d
-
-echo "Starting web server..."
-docker compose -f docker-compose-nginx.yml up -d
-
-echo "Starting monitoring..."
-docker compose -f docker-compose-monitoring.yml up -d
+# Check service status
+echo "Checking service status..."
+docker compose ps
 
 echo "All services started!"
 EOF
@@ -4019,19 +3578,349 @@ cd $SYSTEM_DIR
 
 echo "Stopping MikroTik VPN services..."
 
-# Stop in reverse order
-docker compose -f docker-compose-monitoring.yml down 2>/dev/null || true
-docker compose -f docker-compose-nginx.yml down 2>/dev/null || true
-docker compose -f docker-compose-app.yml down 2>/dev/null || true
-docker compose -f docker-compose-l2tp.yml down 2>/dev/null || true
-docker compose -f docker-compose-openvpn.yml down 2>/dev/null || true
-docker compose -f docker-compose-redis.yml down 2>/dev/null || true
-docker compose -f docker-compose-mongodb.yml down 2>/dev/null || true
+# Stop all services
+docker compose down
 
 echo "All services stopped!"
 EOF
 
     chmod +x $SCRIPT_DIR/stop-all-services.sh
+}
+
+create_unified_compose() {
+    log "Creating unified Docker Compose configuration..."
+    
+    # Get L2TP PSK
+    L2TP_PSK=$(openssl rand -base64 32)
+    
+    # Save L2TP PSK to credentials file
+    echo "L2TP_PSK=$L2TP_PSK" >> $CONFIG_DIR/l2tp-credentials.txt
+    
+    # Create main docker-compose.yml that includes all services
+    cat << EOF > $SYSTEM_DIR/docker-compose.yml
+services:
+  # Database Services
+  mongodb:
+    image: mongo:6.0
+    container_name: mikrotik-mongodb
+    restart: unless-stopped
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=\${MONGO_ROOT_PASSWORD}
+      - MONGO_INITDB_DATABASE=mikrotik_vpn
+    volumes:
+      - ./mongodb/data:/data/db
+      - ./mongodb/logs:/var/log/mongodb
+      - ./mongodb/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    ports:
+      - "127.0.0.1:27017:27017"
+    command: mongod --auth --bind_ip_all
+    networks:
+      - mikrotik-vpn-net
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  mongo-express:
+    image: mongo-express:latest
+    container_name: mikrotik-mongo-express
+    restart: unless-stopped
+    environment:
+      - ME_CONFIG_MONGODB_ADMINUSERNAME=admin
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=\${MONGO_ROOT_PASSWORD}
+      - ME_CONFIG_MONGODB_SERVER=mongodb
+      - ME_CONFIG_BASICAUTH_USERNAME=admin
+      - ME_CONFIG_BASICAUTH_PASSWORD=\${MONGO_ROOT_PASSWORD}
+    ports:
+      - "127.0.0.1:8081:8081"
+    networks:
+      - mikrotik-vpn-net
+    depends_on:
+      - mongodb
+
+  redis:
+    image: redis:7-alpine
+    container_name: mikrotik-redis
+    restart: unless-stopped
+    command: redis-server /usr/local/etc/redis/redis.conf
+    volumes:
+      - ./redis/data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - ./redis/logs:/var/log/redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    networks:
+      - mikrotik-vpn-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "--pass", "\${REDIS_PASSWORD}", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: mikrotik-redis-commander
+    restart: unless-stopped
+    environment:
+      - REDIS_HOSTS=local:redis:6379:0:\${REDIS_PASSWORD}
+      - HTTP_USER=admin
+      - HTTP_PASSWORD=\${REDIS_PASSWORD}
+    ports:
+      - "127.0.0.1:8082:8081"
+    networks:
+      - mikrotik-vpn-net
+    depends_on:
+      - redis
+
+  # Application
+  app:
+    build: 
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: mikrotik-app
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./app:/usr/src/app
+      - /usr/src/app/node_modules
+      - ./logs:/var/log/mikrotik-vpn
+    networks:
+      - mikrotik-vpn-net
+    depends_on:
+      - mongodb
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Web Server
+  nginx:
+    image: nginx:alpine
+    container_name: mikrotik-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./nginx/html:/var/www/html:ro
+      - ./nginx/logs:/var/log/nginx
+      - certbot_www:/var/www/certbot:ro
+    networks:
+      - mikrotik-vpn-net
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      - app
+
+  # VPN Services
+  openvpn:
+    image: kylemanna/openvpn:latest
+    container_name: mikrotik-openvpn
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "1194:1194/udp"
+      - "127.0.0.1:7505:7505"
+    volumes:
+      - ./openvpn:/etc/openvpn
+      - /var/log/mikrotik-vpn:/var/log
+    restart: unless-stopped
+    networks:
+      - mikrotik-vpn-net
+    environment:
+      - OPENVPN_CONFIG=/etc/openvpn/server/server.conf
+
+  l2tp-ipsec:
+    image: hwdsl2/ipsec-vpn-server:latest
+    container_name: mikrotik-l2tp
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - VPN_IPSEC_PSK=\${L2TP_PSK}
+      - VPN_USER=mikrotik
+      - VPN_PASSWORD=\${MONGO_ROOT_PASSWORD}
+    ports:
+      - "500:500/udp"
+      - "4500:4500/udp"
+      - "1701:1701/udp"
+    volumes:
+      - ./l2tp:/etc/ipsec.d
+      - /lib/modules:/lib/modules:ro
+    restart: unless-stopped
+    networks:
+      - mikrotik-vpn-net
+    privileged: true
+
+  # Monitoring Services
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: mikrotik-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - mikrotik-vpn-net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: mikrotik-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=\${MONGO_ROOT_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3001:3000"
+    networks:
+      - mikrotik-vpn-net
+    depends_on:
+      - prometheus
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: mikrotik-node-exporter
+    restart: unless-stopped
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/)'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    ports:
+      - "127.0.0.1:9100:9100"
+    networks:
+      - mikrotik-vpn-net
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: mikrotik-cadvisor
+    restart: unless-stopped
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - mikrotik-vpn-net
+    privileged: true
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: mikrotik-alertmanager
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    ports:
+      - "127.0.0.1:9093:9093"
+    networks:
+      - mikrotik-vpn-net
+
+  mongodb-exporter:
+    image: percona/mongodb_exporter:0.35
+    container_name: mikrotik-mongodb-exporter
+    restart: unless-stopped
+    environment:
+      - MONGODB_URI=mongodb://admin:\${MONGO_ROOT_PASSWORD}@mongodb:27017
+    ports:
+      - "127.0.0.1:9216:9216"
+    networks:
+      - mikrotik-vpn-net
+    depends_on:
+      - mongodb
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: mikrotik-redis-exporter
+    restart: unless-stopped
+    environment:
+      - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=\${REDIS_PASSWORD}
+    ports:
+      - "127.0.0.1:9121:9121"
+    networks:
+      - mikrotik-vpn-net
+    depends_on:
+      - redis
+
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:latest
+    container_name: mikrotik-nginx-exporter
+    restart: unless-stopped
+    command:
+      - '-nginx.scrape-uri=http://nginx/nginx_status'
+    ports:
+      - "127.0.0.1:9113:9113"
+    networks:
+      - mikrotik-vpn-net
+    depends_on:
+      - nginx
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  alertmanager_data:
+  certbot_www:
+
+networks:
+  mikrotik-vpn-net:
+    external: true
+EOF
+
+    # Create .env file for docker-compose
+    cat << EOF > $SYSTEM_DIR/.env
+# MongoDB
+MONGO_ROOT_PASSWORD=$MONGO_ROOT_PASSWORD
+MONGO_APP_PASSWORD=$MONGO_APP_PASSWORD
+
+# Redis
+REDIS_PASSWORD=$REDIS_PASSWORD
+
+# L2TP
+L2TP_PSK=$L2TP_PSK
+
+# Domain
+DOMAIN_NAME=$DOMAIN_NAME
+ADMIN_EMAIL=$ADMIN_EMAIL
+EOF
+
+    chmod 600 $SYSTEM_DIR/.env
 }
 
 setup_system_service() {
@@ -4082,6 +3971,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# Load environment
+source /opt/mikrotik-vpn/configs/setup.env
+
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a $LOG_FILE
 }
@@ -4119,14 +4011,21 @@ check_service() {
                     fi
                     ;;
                 "redis")
-                    if docker exec $container_name redis-cli ping >/dev/null 2>&1; then
+                    if docker exec $container_name redis-cli --pass "$REDIS_PASSWORD" ping 2>/dev/null | grep -q "PONG"; then
                         print_ok "$service is running and responding"
                     else
                         print_fail "$service is running but not responding"
                     fi
                     ;;
+                "app")
+                    if curl -s http://localhost:3000/health 2>/dev/null | grep -q "OK"; then
+                        print_ok "$service is running and healthy"
+                    else
+                        print_warning "$service is running but health check failed"
+                    fi
+                    ;;
                 "nginx")
-                    if curl -s -o /dev/null -w "%{http_code}" http://localhost >/dev/null 2>&1; then
+                    if curl -s -o /dev/null -w "%{http_code}" http://localhost 2>/dev/null | grep -q "200\|301\|302"; then
                         print_ok "$service is running and responding"
                     else
                         print_warning "$service is running but not responding on port 80"
@@ -4226,69 +4125,65 @@ check_backups() {
 }
 
 # Main health check execution
-main() {
-    echo "=== MikroTik VPN System Health Check ==="
-    echo "Timestamp: $(date)"
-    echo "Hostname: $(hostname)"
-    echo
-    
-    # Check all critical services
-    echo "Checking Docker services..."
-    check_service "mongodb"
-    check_service "redis"
-    check_service "app"
-    check_service "nginx"
-    check_service "openvpn"
-    check_service "prometheus"
-    check_service "grafana"
-    echo
-    
-    # Check system resources
-    echo "Checking system resources..."
-    check_disk_space
-    check_memory
-    echo
-    
-    # Check network
-    echo "Checking network..."
-    check_network
-    echo
-    
-    # Check certificates
-    echo "Checking certificates..."
-    check_certificates
-    echo
-    
-    # Check backups
-    echo "Checking backups..."
-    check_backups
-    echo
-    
-    # Summary
-    echo "=== Health Check Summary ==="
-    if [ -n "$FAILED_CHECKS" ]; then
-        echo -e "${RED}Failed checks:${NC}$FAILED_CHECKS"
-        echo
-    fi
-    
-    if [ -n "$WARNING_CHECKS" ]; then
-        echo -e "${YELLOW}Warnings:${NC}$WARNING_CHECKS"
-        echo
-    fi
-    
-    if [ -z "$FAILED_CHECKS" ] && [ -z "$WARNING_CHECKS" ]; then
-        echo -e "${GREEN}All health checks passed!${NC}"
-        exit 0
-    elif [ -z "$FAILED_CHECKS" ]; then
-        echo -e "${YELLOW}Health check completed with warnings${NC}"
-        exit 0
-    else
-        echo -e "${RED}Health check failed!${NC}"
-        exit 1
-    fi
-}
+echo "=== MikroTik VPN System Health Check ==="
+echo "Timestamp: $(date)"
+echo "Hostname: $(hostname)"
+echo
 
-main "$@"
+# Check all critical services
+echo "Checking Docker services..."
+check_service "mongodb"
+check_service "redis"
+check_service "app"
+check_service "nginx"
+check_service "openvpn"
+check_service "prometheus"
+check_service "grafana"
+echo
+
+# Check system resources
+echo "Checking system resources..."
+check_disk_space
+check_memory
+echo
+
+# Check network
+echo "Checking network..."
+check_network
+echo
+
+# Check certificates
+echo "Checking certificates..."
+check_certificates
+echo
+
+# Check backups
+echo "Checking backups..."
+check_backups
+echo
+
+# Summary
+echo "=== Health Check Summary ==="
+if [ -n "$FAILED_CHECKS" ]; then
+    echo -e "${RED}Failed checks:${NC}$FAILED_CHECKS"
+    echo
+fi
+
+if [ -n "$WARNING_CHECKS" ]; then
+    echo -e "${YELLOW}Warnings:${NC}$WARNING_CHECKS"
+    echo
+fi
+
+if [ -z "$FAILED_CHECKS" ] && [ -z "$WARNING_CHECKS" ]; then
+    echo -e "${GREEN}All health checks passed!${NC}"
+    exit 0
+elif [ -z "$FAILED_CHECKS" ]; then
+    echo -e "${YELLOW}Health check completed with warnings${NC}"
+    exit 0
+else
+    echo -e "${RED}Health check failed!${NC}"
+    exit 1
+fi
 EOF
 
     chmod +x $SCRIPT_DIR/health-check.sh
@@ -4412,7 +4307,7 @@ echo
 echo "Next Steps:"
 echo "1. Run 'mikrotik-vpn health' to verify installation"
 echo "2. Generate Let's Encrypt SSL certificate:"
-echo "   docker compose -f /opt/mikrotik-vpn/docker-compose-certbot.yml run --rm certbot"
+echo "   docker run --rm -v /opt/mikrotik-vpn/nginx/ssl:/etc/letsencrypt -v /opt/mikrotik-vpn/nginx/html:/var/www/certbot certbot/certbot certonly --webroot --webroot-path=/var/www/certbot --email $ADMIN_EMAIL --agree-tos --no-eff-email -d $DOMAIN_NAME -d admin.$DOMAIN_NAME"
 echo "3. Create your first VPN client:"
 echo "   mikrotik-vpn vpn create <client-name>"
 echo "4. Set up email configuration for alerts"
@@ -4434,7 +4329,7 @@ COMPLETION_SCRIPT
 main() {
     clear
     echo "==================================================================="
-    echo "MikroTik VPN Management System Installer v2.0"
+    echo "MikroTik VPN Management System Installer v3.0"
     echo "==================================================================="
     echo
     
