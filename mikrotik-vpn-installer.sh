@@ -686,6 +686,58 @@ EOF
 }
 
 create_vpn_management_scripts() {
+    cat << 'EOF' > $SCRIPT_DIR/generate-vpn-client.sh
+#!/bin/bash
+# VPN Client Configuration Generator
+source /opt/mikrotik-vpn/configs/setup.env
+CLIENT_NAME=$1
+if [ -z "$CLIENT_NAME" ]; then
+    echo "Usage: $0 <client_name>"
+    exit 1
+fi
+if ! [[ $CLIENT_NAME =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    echo "Client name can only contain letters, numbers, hyphens and underscores"
+    exit 1
+fi
+cd $SYSTEM_DIR/openvpn/easy-rsa
+./easyrsa gen-req $CLIENT_NAME nopass
+./easyrsa sign-req client $CLIENT_NAME
+mkdir -p $SYSTEM_DIR/clients
+cat > $SYSTEM_DIR/clients/$CLIENT_NAME.ovpn <<OVPN_EOF
+client
+dev tun
+proto udp
+remote $DOMAIN_NAME 1194
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+remote-cert-tls server
+cipher AES-256-GCM
+auth SHA512
+comp-lzo
+verb 3
+
+<ca>
+$(cat pki/ca.crt)
+</ca>
+
+<cert>
+$(openssl x509 -in pki/issued/$CLIENT_NAME.crt)
+</cert>
+
+<key>
+$(cat pki/private/$CLIENT_NAME.key)
+</key>
+
+<tls-auth>
+$(cat ta.key)
+</tls-auth>
+key-direction 1
+OVPN_EOF
+echo "Client configuration created: $SYSTEM_DIR/clients/$CLIENT_NAME.ovpn"
+EOF
+    chmod +x $SCRIPT_DIR/generate-vpn-client.sh
     cat << 'SCRIPT_EOF' > $SCRIPT_DIR/generate-vpn-client.sh
 #!/bin/bash
 # VPN Client Configuration Generator
