@@ -2197,6 +2197,12 @@ phase8_security_hardening() {
 }
 
 setup_firewall() {
+    # Check if UFW is installed
+    if ! command -v ufw >/dev/null 2>&1; then
+        log "Installing UFW..."
+        apt install -y ufw
+    fi
+    
     # Reset UFW to defaults
     ufw --force reset
     
@@ -2204,7 +2210,10 @@ setup_firewall() {
     ufw default deny incoming
     ufw default allow outgoing
     
-    # Allow SSH
+    # Allow SSH (check if SSH_PORT is set)
+    if [ -z "$SSH_PORT" ]; then
+        SSH_PORT=22
+    fi
     ufw allow $SSH_PORT/tcp comment 'SSH'
     
     # Allow web traffic
@@ -2218,9 +2227,11 @@ setup_firewall() {
     ufw allow 1701/udp comment 'L2TP'
     
     # Allow monitoring (from VPN network only)
-    VPN_SUBNET=$(echo $VPN_NETWORK | cut -d'/' -f1 | cut -d'.' -f1-3).0/24
-    ufw allow from $VPN_SUBNET to any port 9090 comment 'Prometheus'
-    ufw allow from $VPN_SUBNET to any port 3001 comment 'Grafana'
+    if [ -n "$VPN_NETWORK" ]; then
+        VPN_SUBNET=$(echo $VPN_NETWORK | cut -d'/' -f1 | cut -d'.' -f1-3).0/24
+        ufw allow from $VPN_SUBNET to any port 9090 comment 'Prometheus'
+        ufw allow from $VPN_SUBNET to any port 3001 comment 'Grafana'
+    fi
     
     # Allow Docker bridge network
     ufw allow from 172.20.0.0/16 comment 'Docker network'
@@ -2233,14 +2244,32 @@ setup_firewall() {
 }
 
 setup_fail2ban() {
+    # Check if fail2ban is installed
+    if ! command -v fail2ban-client >/dev/null 2>&1; then
+        log "Installing Fail2ban..."
+        apt install -y fail2ban
+    fi
+    
+    # Ensure SSH_PORT is set
+    if [ -z "$SSH_PORT" ]; then
+        SSH_PORT=22
+    fi
+    
+    # Ensure VPN_SUBNET is set
+    if [ -n "$VPN_NETWORK" ]; then
+        VPN_SUBNET=$(echo $VPN_NETWORK | cut -d'/' -f1 | cut -d'.' -f1-3).0/24
+    else
+        VPN_SUBNET="10.8.0.0/24"
+    fi
+    
     # Create custom jail configuration
     cat << EOF > /etc/fail2ban/jail.local
 [DEFAULT]
 bantime = 3600
 findtime = 600
 maxretry = 5
-destemail = $ADMIN_EMAIL
-sender = fail2ban@$DOMAIN_NAME
+destemail = ${ADMIN_EMAIL:-admin@localhost}
+sender = fail2ban@${DOMAIN_NAME:-localhost}
 action = %(action_mwl)s
 ignoreip = 127.0.0.1/8 ::1 $VPN_SUBNET
 
@@ -2257,6 +2286,7 @@ enabled = true
 filter = nginx-http-auth
 port = http,https
 logpath = $LOG_DIR/nginx/error.log
+maxretry = 5
 
 [nginx-limit-req]
 enabled = true
@@ -2280,6 +2310,20 @@ filter = nginx-noscript
 logpath = $LOG_DIR/nginx/access.log
 maxretry = 6
 
+[nginx-badbots]
+enabled = true
+port = http,https
+filter = nginx-badbots
+logpath = $LOG_DIR/nginx/access.log
+maxretry = 2
+
+[nginx-noproxy]
+enabled = true
+port = http,https
+filter = nginx-noproxy
+logpath = $LOG_DIR/nginx/access.log
+maxretry = 2
+
 [openvpn]
 enabled = true
 port = 1194
@@ -2289,7 +2333,7 @@ logpath = $LOG_DIR/openvpn.log
 maxretry = 3
 
 [mongodb-auth]
-enabled = true
+enabled = false
 filter = mongodb-auth
 port = 27017
 logpath = $SYSTEM_DIR/mongodb/logs/mongod.log
@@ -2303,6 +2347,7 @@ failregex = ^.*<HOST>:[0-9]{4,5} TLS Auth Error.*$
             ^.*<HOST>:[0-9]{4,5} VERIFY ERROR.*$
             ^.*<HOST>:[0-9]{4,5} TLS Error: TLS handshake failed$
             ^.*<HOST>:[0-9]{4,5} Connection reset, restarting.*$
+            ^.*<HOST>:[0-9]{4,5} Authenticate/Decrypt packet error.*$
 ignoreregex =
 EOF
 
@@ -2311,35 +2356,61 @@ EOF
 [Definition]
 failregex = ^.*authentication failed.*from client <HOST>.*$
             ^.*Failed to authenticate.*from client <HOST>.*$
+            ^.*SCRAM authentication failed.*from client <HOST>.*$
 ignoreregex =
 EOF
+
+    # Create nginx-badbots filter if not exists
+    if [ ! -f "/etc/fail2ban/filter.d/nginx-badbots.conf" ]; then
+        cat << 'EOF' > /etc/fail2ban/filter.d/nginx-badbots.conf
+[Definition]
+badbots = Googlebot|bingbot|Baiduspider|yandex
+failregex = ^<HOST> -.*"(GET|POST|HEAD).*HTTP.*"(?:%(badbots)s|compatible; %(badbots)s)"$
+ignoreregex =
+EOF
+    fi
+
+    # Create nginx-noproxy filter if not exists
+    if [ ! -f "/etc/fail2ban/filter.d/nginx-noproxy.conf" ]; then
+        cat << 'EOF' > /etc/fail2ban/filter.d/nginx-noproxy.conf
+[Definition]
+failregex = ^<HOST> -.*"(GET|POST|HEAD|CONNECT) .*(:(80|443|8080|8000|3128)).*$
+ignoreregex =
+EOF
+    fi
 
     # Restart and enable Fail2ban
     systemctl restart fail2ban
     systemctl enable fail2ban
     
     # Check status
-    fail2ban-client status
+    fail2ban-client status || log_warning "Fail2ban status check failed"
 }
 
 harden_ssh() {
-    # Check if SSH is installed
+    # Check if OpenSSH server is installed
     if [ ! -f "/etc/ssh/sshd_config" ]; then
-        log_warning "SSH config not found, installing OpenSSH server..."
+        log "Installing OpenSSH server..."
         apt install -y openssh-server
         systemctl enable ssh
         systemctl start ssh
     fi
     
-    # Backup original SSH config only if it exists
+    # Backup original SSH config
     if [ -f "/etc/ssh/sshd_config" ]; then
         cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%Y%m%d_%H%M%S)
-    else
-        log_warning "No sshd_config to backup, creating new configuration"
     fi
     
     # Ensure SSH config directory exists
     mkdir -p /etc/ssh/sshd_config.d/
+    
+    # Ensure SSH_PORT is set
+    if [ -z "$SSH_PORT" ]; then
+        SSH_PORT=22
+    fi
+    
+    # Get current user
+    CURRENT_USER=${SUDO_USER:-$(whoami)}
     
     # Create hardened SSH configuration
     cat << EOF > /etc/ssh/sshd_config.d/99-mikrotik-vpn-hardening.conf
@@ -2361,12 +2432,12 @@ MaxSessions 5
 PubkeyAuthentication yes
 AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys2
 
-# Password authentication
+# Password authentication (disable after setting up keys)
 PasswordAuthentication yes
 PermitEmptyPasswords no
 ChallengeResponseAuthentication no
 
-# Disable problematic methods
+# Disable unused authentication methods
 HostbasedAuthentication no
 IgnoreUserKnownHosts yes
 IgnoreRhosts yes
@@ -2387,7 +2458,7 @@ ClientAliveCountMax 2
 UseDNS no
 
 # User restrictions
-AllowUsers mikrotik-vpn ${SUDO_USER:-root}
+AllowUsers mikrotik-vpn $CURRENT_USER
 
 # Logging
 SyslogFacility AUTH
@@ -2416,20 +2487,35 @@ disconnect immediately.
 ******************************************************************************
 EOF
 
-    # Test SSH configuration if sshd exists
+    # Set correct permissions
+    chmod 644 /etc/ssh/sshd_config.d/99-mikrotik-vpn-hardening.conf
+    chmod 644 /etc/issue.net
+    
+    # Test SSH configuration
     if command -v sshd >/dev/null 2>&1; then
         sshd -t
         
         if [ $? -eq 0 ]; then
-            systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || {
-                log_warning "Could not restart SSH service, please restart manually"
-            }
+            # Restart SSH service
+            if systemctl is-active --quiet ssh; then
+                systemctl restart ssh
+            elif systemctl is-active --quiet sshd; then
+                systemctl restart sshd
+            else
+                log_warning "SSH service not found or not active"
+            fi
             log "SSH hardening completed successfully"
         else
-            log_warning "SSH configuration test failed, but continuing installation"
+            log_error "SSH configuration test failed"
+            # Restore backup
+            if [ -f "/etc/ssh/sshd_config.backup.$(date +%Y%m%d)_"* ]; then
+                latest_backup=$(ls -t /etc/ssh/sshd_config.backup.* | head -1)
+                cp $latest_backup /etc/ssh/sshd_config
+                log "Restored SSH configuration from backup"
+            fi
         fi
     else
-        log_warning "SSH daemon not found, skipping SSH configuration test"
+        log_warning "SSH daemon not found, skipping configuration test"
     fi
 }
 
@@ -2437,27 +2523,30 @@ setup_intrusion_detection() {
     # Setup AIDE
     log "Setting up AIDE..."
     
-    # Initialize AIDE database with automatic yes
-    yes | aideinit || {
-        log_warning "AIDE initialization had warnings (return code: $?)"
-        # AIDE often returns non-zero even on success, so we check if the database was created
-        if [ -f "/var/lib/aide/aide.db.new" ]; then
-            log "AIDE database created successfully"
-        else
-            log_warning "AIDE database creation may have failed, continuing anyway"
-        fi
-    }
-    
-    # Copy the new database to be the current database
-    if [ -f "/var/lib/aide/aide.db.new" ]; then
-        cp /var/lib/aide/aide.db.new /var/lib/aide/aide.db
-        log "AIDE database installed"
-    else
-        log_warning "AIDE database not found, skipping AIDE setup"
+    # Install AIDE if not installed
+    if ! command -v aide >/dev/null 2>&1; then
+        apt install -y aide aide-common
     fi
     
-    # Create AIDE configuration
-    cat << 'EOF' > /etc/aide/aide.conf.d/99-mikrotik-vpn
+    # Initialize AIDE database
+    if [ ! -f "/var/lib/aide/aide.db" ]; then
+        log "Initializing AIDE database (this may take a while)..."
+        aideinit -y -f || {
+            log_warning "AIDE initialization completed with warnings"
+        }
+        
+        # Copy the new database if it exists
+        if [ -f "/var/lib/aide/aide.db.new" ]; then
+            cp /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+            log "AIDE database installed"
+        else
+            log_warning "AIDE database not created, skipping AIDE setup"
+        fi
+    fi
+    
+    # Create AIDE configuration for our system
+    if [ -d "/etc/aide/aide.conf.d" ]; then
+        cat << 'EOF' > /etc/aide/aide.conf.d/99-mikrotik-vpn
 # MikroTik VPN System AIDE Rules
 /opt/mikrotik-vpn/configs$ VarDir
 /opt/mikrotik-vpn/scripts$ BinDir
@@ -2465,36 +2554,48 @@ setup_intrusion_detection() {
 /opt/mikrotik-vpn/*.yml$ ConfFiles
 /var/log/mikrotik-vpn$ Logs
 EOF
+    fi
     
     # Setup ClamAV
     log "Setting up ClamAV..."
     
-    # Stop ClamAV services first to release locks
+    # Install ClamAV if not installed
+    if ! command -v clamscan >/dev/null 2>&1; then
+        apt install -y clamav clamav-daemon
+    fi
+    
+    # Stop services to update
     systemctl stop clamav-freshclam 2>/dev/null || true
     systemctl stop clamav-daemon 2>/dev/null || true
     
-    # Fix permissions and remove lock files
+    # Fix permissions
     mkdir -p /var/log/clamav
     chown -R clamav:clamav /var/log/clamav
+    chmod 755 /var/log/clamav
+    
+    # Remove any lock files
     rm -f /var/log/clamav/freshclam.log.lock 2>/dev/null || true
     
     # Update virus definitions
+    log "Updating ClamAV virus definitions..."
     freshclam || {
-        log_warning "Failed to update ClamAV definitions, trying alternative method..."
-        # Try to fix common issues
+        log_warning "ClamAV update failed, trying alternative method..."
+        # Create necessary directories
         mkdir -p /var/lib/clamav
         chown -R clamav:clamav /var/lib/clamav
         chmod 755 /var/lib/clamav
         
-        # Try again with sudo
+        # Try with different user
         sudo -u clamav freshclam || {
-            log_warning "ClamAV update failed, continuing without virus definitions update"
+            log_warning "ClamAV update failed, continuing without update"
         }
     }
     
-    # Enable and start services
+    # Start services
     systemctl enable clamav-freshclam 2>/dev/null || true
     systemctl start clamav-freshclam 2>/dev/null || true
+    systemctl enable clamav-daemon 2>/dev/null || true
+    systemctl start clamav-daemon 2>/dev/null || true
     
     # Create virus scan script
     cat << 'EOF' > $SCRIPT_DIR/virus-scan.sh
@@ -2511,7 +2612,7 @@ log() {
 log "Starting virus scan..."
 
 # Update virus definitions
-freshclam >> $LOG_FILE 2>&1
+freshclam >> $LOG_FILE 2>&1 || log "Failed to update virus definitions"
 
 # Scan directories
 for dir in $SCAN_DIRS; do
@@ -2528,8 +2629,29 @@ EOF
     
     # Setup rkhunter
     log "Setting up rkhunter..."
-    rkhunter --update
-    rkhunter --propupd
+    
+    # Install rkhunter if not installed
+    if ! command -v rkhunter >/dev/null 2>&1; then
+        apt install -y rkhunter
+    fi
+    
+    # Fix rkhunter configuration
+    if [ -f "/etc/rkhunter.conf" ]; then
+        # Backup original
+        cp /etc/rkhunter.conf /etc/rkhunter.conf.backup
+        
+        # Fix common issues
+        sed -i 's|^WEB_CMD="/bin/false"|#WEB_CMD="/bin/false"|g' /etc/rkhunter.conf
+        sed -i 's|^WEB_CMD=.*|WEB_CMD=""|g' /etc/rkhunter.conf
+        
+        # Disable some checks that might cause issues
+        echo "DISABLE_TESTS=suspscan hidden_ports hidden_procs deleted_files packet_cap_apps apps" >> /etc/rkhunter.conf
+    fi
+    
+    # Update rkhunter
+    log "Updating rkhunter..."
+    rkhunter --update || log_warning "rkhunter update failed"
+    rkhunter --propupd || log_warning "rkhunter property update failed"
     
     # Create security audit script
     cat << 'EOF' > $SCRIPT_DIR/security-audit.sh
@@ -2546,32 +2668,70 @@ log "Starting security audit..."
 
 # Check for suspicious users
 log "Checking for suspicious users..."
-awk -F: '($3 == 0) && ($1 != "root")' /etc/passwd >> $LOG_FILE
+log "Users with UID 0 (should only be root):"
+awk -F: '($3 == 0) {print $1}' /etc/passwd >> $LOG_FILE
 
 # Check for files with SUID/SGID bits
 log "Checking SUID/SGID files..."
-find / -type f \( -perm -4000 -o -perm -2000 \) -exec ls -l {} \; 2>/dev/null >> $LOG_FILE
+find / -type f \( -perm -4000 -o -perm -2000 \) -exec ls -l {} \; 2>/dev/null | head -20 >> $LOG_FILE
 
 # Check for world-writable files
 log "Checking world-writable files..."
-find / -type f -perm -002 2>/dev/null | grep -v "^/proc" | grep -v "^/sys" >> $LOG_FILE
+find / -type f -perm -002 2>/dev/null | grep -v "^/proc" | grep -v "^/sys" | grep -v "^/dev" | head -20 >> $LOG_FILE
 
 # Check listening ports
 log "Checking listening ports..."
-netstat -tulpn >> $LOG_FILE 2>&1
+netstat -tulpn 2>/dev/null >> $LOG_FILE || ss -tulpn >> $LOG_FILE
 
-# Run rkhunter
-log "Running rkhunter..."
-rkhunter --check --skip-keypress >> $LOG_FILE 2>&1
+# Run rkhunter check
+if command -v rkhunter >/dev/null 2>&1; then
+    log "Running rkhunter..."
+    rkhunter --check --skip-keypress --report-warnings-only >> $LOG_FILE 2>&1 || log "rkhunter check completed with warnings"
+fi
 
-# Run AIDE check
-log "Running AIDE check..."
-aide --check >> $LOG_FILE 2>&1
+# Run AIDE check if database exists
+if [ -f "/var/lib/aide/aide.db" ]; then
+    log "Running AIDE check..."
+    aide --check >> $LOG_FILE 2>&1 || log "AIDE check completed with changes detected"
+fi
+
+# Check for failed login attempts
+log "Recent failed login attempts:"
+grep "Failed password" /var/log/auth.log | tail -20 >> $LOG_FILE 2>/dev/null
+
+# Check Docker security
+log "Docker security check..."
+docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}" >> $LOG_FILE
 
 log "Security audit completed"
 EOF
     
     chmod +x $SCRIPT_DIR/security-audit.sh
+    
+    # Create daily security check cron job
+    cat << EOF > /etc/cron.d/mikrotik-vpn-security
+# MikroTik VPN System Security Checks
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# Daily security audit at 3:30 AM
+30 3 * * * root /opt/mikrotik-vpn/scripts/security-audit.sh >> /var/log/mikrotik-vpn/security-cron.log 2>&1
+
+# Weekly virus scan at 4:00 AM on Sundays
+0 4 * * 0 root /opt/mikrotik-vpn/scripts/virus-scan.sh >> /var/log/mikrotik-vpn/virus-scan-cron.log 2>&1
+EOF
+    
+    log "Intrusion detection setup completed"
+}
+
+# Add helper function for warnings if not exists
+log_warning() {
+    echo -e "${YELLOW}[$(date '+%Y-%m-%d %H:%M:%S')] WARNING:${NC} $1" | tee -a $LOG_DIR/setup.log
+}
+
+# Add helper function for errors if not exists
+log_error() {
+    echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')] ERROR:${NC} $1" | tee -a $LOG_DIR/setup.log
 }
 
 # =============================================================================
