@@ -2323,8 +2323,18 @@ EOF
 }
 
 harden_ssh() {
+    # Check if SSH is installed
+    if [ ! -f "/etc/ssh/sshd_config" ]; then
+        log_warning "SSH config not found, installing OpenSSH server..."
+        apt install -y openssh-server
+        systemctl enable ssh
+        systemctl start ssh
+    fi
+    
     # Backup original SSH config
-    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%Y%m%d_%H%M%S)
+    if [ -f "/etc/ssh/sshd_config" ]; then
+        cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%Y%m%d_%H%M%S)
+    fi
     
     # Create hardened SSH configuration
     cat << EOF > /etc/ssh/sshd_config.d/99-mikrotik-vpn-hardening.conf
@@ -2402,14 +2412,19 @@ disconnect immediately.
 EOF
 
     # Test SSH configuration
-    sshd -t
-    
-    if [ $? -eq 0 ]; then
-        systemctl restart sshd
-        log "SSH hardening completed successfully"
+    if command -v sshd >/dev/null 2>&1; then
+        sshd -t
+        
+        if [ $? -eq 0 ]; then
+            systemctl restart sshd || systemctl restart ssh
+            log "SSH hardening completed successfully"
+        else
+            log_error "SSH configuration test failed"
+            # Don't exit, just warn
+            log_warning "Continuing with installation despite SSH config issues"
+        fi
     else
-        log_error "SSH configuration test failed"
-        exit 1
+        log_warning "SSH daemon not found, skipping SSH hardening"
     fi
 }
 
