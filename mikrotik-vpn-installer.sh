@@ -83,7 +83,7 @@ get_user_input() {
     # Domain configuration
     while true; do
         read -p "Enter your domain name (e.g., vpn.yourcompany.com): " DOMAIN_NAME
-        DOMAIN_NAME=$(echo "$DOMAIN_NAME" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//g')
+        DOMAIN_NAME=$(echo "$DOMAIN_NAME" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         
         if [ -z "$DOMAIN_NAME" ]; then
             echo "Domain name cannot be empty. Please try again."
@@ -203,7 +203,7 @@ get_user_input() {
 }
 
 save_configuration() {
-    cat << EOF_UNIQ1_EOF> $CONFIG_DIR/setup.env
+    cat << EOF > $CONFIG_DIR/setup.env
 # MikroTik VPN System Configuration
 export DOMAIN_NAME="$DOMAIN_NAME"
 export ADMIN_EMAIL="$ADMIN_EMAIL"
@@ -218,7 +218,7 @@ export LOG_DIR="$LOG_DIR"
 export BACKUP_DIR="$BACKUP_DIR"
 export SCRIPT_DIR="$SCRIPT_DIR"
 export CONFIG_DIR="$CONFIG_DIR"
-EOF_UNIQ1_EOF
+EOF
     
     chmod 600 $CONFIG_DIR/setup.env
 }
@@ -345,17 +345,17 @@ create_system_user() {
 
 apply_system_optimizations() {
     # System limits
-    cat << 'EOF_UNIQ2_EOF'> /etc/security/limits.d/mikrotik-vpn.conf
+    cat << 'EOF' > /etc/security/limits.d/mikrotik-vpn.conf
 mikrotik-vpn soft nofile 65536
 mikrotik-vpn hard nofile 65536
 mikrotik-vpn soft nproc 32768
 mikrotik-vpn hard nproc 32768
 * soft nofile 65536
 * hard nofile 65536
-EOF_UNIQ2_EOF
+EOF
 
     # Kernel parameters
-    cat << 'EOF_UNIQ3_EOF'> /etc/sysctl.d/99-mikrotik-vpn.conf
+    cat << 'EOF' > /etc/sysctl.d/99-mikrotik-vpn.conf
 # Network Performance Tuning
 net.core.rmem_max = 134217728
 net.core.wmem_max = 134217728
@@ -382,7 +382,7 @@ net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_max_syn_backlog = 2048
 net.ipv4.tcp_synack_retries = 2
 net.ipv4.tcp_syn_retries = 5
-EOF_UNIQ3_EOF
+EOF
 
     sysctl -p /etc/sysctl.d/99-mikrotik-vpn.conf
 }
@@ -410,8 +410,8 @@ phase2_docker_installation() {
     apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     
     # Configure Docker
-# log "Configuring Docker..."
-# configure_docker
+    log "Configuring Docker..."
+    configure_docker
     
     # Add users to docker group
     log "Adding users to docker group..."
@@ -421,9 +421,9 @@ phase2_docker_installation() {
     usermod -aG docker mikrotik-vpn
     
     # Start Docker
-log "Starting Docker..."
-systemctl enable docker
-systemctl start docker
+    log "Starting Docker..."
+    systemctl enable docker
+    systemctl start docker
     
     # Create Docker network
     log "Creating Docker network..."
@@ -437,7 +437,7 @@ systemctl start docker
 }
 
 configure_docker() {
-    cat << 'EOF_UNIQ4_EOF'> /etc/docker/daemon.json
+    cat << 'EOF' > /etc/docker/daemon.json
 {
   "log-driver": "json-file",
   "log-opts": {
@@ -459,9 +459,9 @@ configure_docker() {
   "userland-proxy": false,
   "experimental": false
 }
-EOF_UNIQ4_EOF
+EOF
 
-systemctl restart docker
+    systemctl restart docker
 }
 
 # =============================================================================
@@ -496,9 +496,15 @@ setup_openvpn_server() {
     tar xzf EasyRSA-3.1.0.tgz
     mv EasyRSA-3.1.0/* easy-rsa/
     rm -rf EasyRSA-3.1.0*
+    
+    # Configure Easy-RSA
     cd easy-rsa
+    
+    # Initialize PKI
     ./easyrsa init-pki
-    cat << 'VARS_EOF_UNIQ5_EOF'> pki/vars
+    
+    # Create vars file
+    cat << EOF > pki/vars
 set_var EASYRSA_REQ_COUNTRY    "TH"
 set_var EASYRSA_REQ_PROVINCE   "Bangkok"
 set_var EASYRSA_REQ_CITY       "Bangkok"
@@ -508,43 +514,17 @@ set_var EASYRSA_REQ_OU         "VPN Management"
 set_var EASYRSA_ALGO           "rsa"
 set_var EASYRSA_KEY_SIZE       2048
 set_var EASYRSA_DIGEST         "sha256"
-VARS_EOF_UNIQ5_EOF
+EOF
+    
+    # Build CA
     EASYRSA_BATCH=1 EASYRSA_REQ_CN="MikroTik-VPN-CA" ./easyrsa build-ca nopass
-    EASYRSA_BATCH=1 EASYRSA_REQ_CN="vpn-server" ./easyrsa gen-req vpn-server nopass
-    EASYRSA_BATCH=1 ./easyrsa sign-req server vpn-server
-    ./easyrsa gen-dh
-    rm -rf easy-rsa
-    mkdir -p easy-rsa
-    wget -q https://github.com/OpenVPN/easy-rsa/releases/download/v3.1.0/EasyRSA-3.1.0.tgz
-    tar xzf EasyRSA-3.1.0.tgz
-    mv EasyRSA-3.1.0/* easy-rsa/
-    rm -rf EasyRSA-3.1.0*
-    cd easy-rsa
-    rm -rf easy-rsa
-    mkdir -p easy-rsa
-    wget -q https://github.com/OpenVPN/easy-rsa/releases/download/v3.1.0/EasyRSA-3.1.0.tgz
-    tar xzf EasyRSA-3.1.0.tgz
-    mv EasyRSA-3.1.0/* easy-rsa/
-    rm -rf EasyRSA-3.1.0*
-    cd easy-rsa
-    # ลบ directory เดิม (ถ้ามี) เพื่อป้องกัน conflict
-    rm -rf easy-rsa
-    mkdir -p easy-rsa
-    wget -q https://github.com/OpenVPN/easy-rsa/releases/download/v3.1.0/EasyRSA-3.1.0.tgz
-    tar xzf EasyRSA-3.1.0.tgz
-    mv EasyRSA-3.1.0/* easy-rsa/
-    rm -rf EasyRSA-3.1.0*
-    
-    # Configure Easy-RSA
-    cd easy-rsa
-    
-    # Initialize PKI
-
-
     
     # Generate server certificate
+    EASYRSA_BATCH=1 EASYRSA_REQ_CN="vpn-server" ./easyrsa gen-req vpn-server nopass
+    EASYRSA_BATCH=1 ./easyrsa sign-req server vpn-server
     
     # Generate DH parameters
+    ./easyrsa gen-dh
     
     # Generate TLS auth key
     openvpn --genkey secret ta.key
@@ -559,7 +539,7 @@ VARS_EOF_UNIQ5_EOF
 }
 
 create_openvpn_config() {
-    cat << EOF_UNIQ6_EOF> $SYSTEM_DIR/openvpn/server/server.conf
+    cat << EOF > $SYSTEM_DIR/openvpn/server/server.conf
 # OpenVPN Server Configuration
 port 1194
 proto udp
@@ -608,11 +588,11 @@ max-clients 1000
 
 # Management interface
 management localhost 7505
-EOF_UNIQ6_EOF
+EOF
 }
 
 create_openvpn_compose() {
-    cat << 'EOF_UNIQ7_EOF'> $SYSTEM_DIR/docker-compose-openvpn.yml
+    cat << 'EOF' > $SYSTEM_DIR/docker-compose-openvpn.yml
 version: '3.8'
 
 services:
@@ -636,14 +616,14 @@ services:
 networks:
   mikrotik-vpn-net:
     external: true
-EOF_UNIQ7_EOF
+EOF
 }
 
 setup_l2tp_server() {
     # Generate random PSK
     L2TP_PSK=$(openssl rand -base64 32)
     
-    cat << EOF_UNIQ8_EOF> $SYSTEM_DIR/docker-compose-l2tp.yml
+    cat << EOF > $SYSTEM_DIR/docker-compose-l2tp.yml
 version: '3.8'
 
 services:
@@ -671,76 +651,23 @@ services:
 networks:
   mikrotik-vpn-net:
     external: true
-EOF_UNIQ8_EOF
+EOF
     
     # Save L2TP credentials
-    cat << EOF_UNIQ9_EOF> $CONFIG_DIR/l2tp-credentials.txt
+    cat << EOF > $CONFIG_DIR/l2tp-credentials.txt
 L2TP/IPSec VPN Credentials:
 Server: $DOMAIN_NAME
 PSK: $L2TP_PSK
 Username: mikrotik
 Password: $MONGO_ROOT_PASSWORD
-EOF_UNIQ9_EOF
+EOF
     
     chmod 600 $CONFIG_DIR/l2tp-credentials.txt
 }
 
 create_vpn_management_scripts() {
-    cat << 'SCRIPT_EOF_UNIQ10_EOF'> $SCRIPT_DIR/generate-vpn-client.sh
-#!/bin/bash
-# VPN Client Configuration Generator
-
-source /opt/mikrotik-vpn/configs/setup.env
-CLIENT_NAME=$1
-if [ -z "$CLIENT_NAME" ]; then
-    echo "Usage: $0 <client_name>"
-    exit 1
-fi
-if ! [[ $CLIENT_NAME =~ ^[a-zA-Z0-9_-]+$ ]]; then
-    echo "Client name can only contain letters, numbers, hyphens and underscores"
-    exit 1
-fi
-cd $SYSTEM_DIR/openvpn/easy-rsa
-./easyrsa gen-req $CLIENT_NAME nopass
-./easyrsa sign-req client $CLIENT_NAME
-mkdir -p $SYSTEM_DIR/clients
-cat << OVPN_EOF_UNIQ11_EOF> $SYSTEM_DIR/clients/$CLIENT_NAME.ovpn
-client
-dev tun
-proto udp
-remote $DOMAIN_NAME 1194
-resolv-retry infinite
-nobind
-persist-key
-persist-tun
-remote-cert-tls server
-cipher AES-256-GCM
-auth SHA512
-comp-lzo
-verb 3
-
-<ca>
-$(cat pki/ca.crt)
-</ca>
-
-<cert>
-$(openssl x509 -in pki/issued/$CLIENT_NAME.crt)
-</cert>
-
-<key>
-$(cat pki/private/$CLIENT_NAME.key)
-</key>
-
-<tls-auth>
-$(cat ta.key)
-</tls-auth>
-key-direction 1
-OVPN_EOF_UNIQ11_EOF
-echo "Client configuration created: $SYSTEM_DIR/clients/$CLIENT_NAME.ovpn"
-SCRIPT_EOF
-    chmod +x $SCRIPT_DIR/generate-vpn-client.sh
     # VPN client generator script
-    cat << 'SCRIPT_EOF_UNIQ12_EOF'> $SCRIPT_DIR/generate-vpn-client.sh
+    cat << 'VPNSCRIPT' > $SCRIPT_DIR/generate-vpn-client.sh
 #!/bin/bash
 # VPN Client Configuration Generator
 
@@ -769,7 +696,7 @@ cd $SYSTEM_DIR/openvpn/easy-rsa
 mkdir -p $SYSTEM_DIR/clients
 
 # Create client configuration
-cat << OVPN_EOF_UNIQ13_EOF> $SYSTEM_DIR/clients/$CLIENT_NAME.ovpn
+cat > $SYSTEM_DIR/clients/$CLIENT_NAME.ovpn << OVPNEOF
 client
 dev tun
 proto udp
@@ -800,14 +727,10 @@ $(cat pki/private/$CLIENT_NAME.key)
 $(cat ta.key)
 </tls-auth>
 key-direction 1
-OVPN_EOF_UNIQ13_EOF
-OVPN_EOF
+OVPNEOF
 
 echo "Client configuration created: $SYSTEM_DIR/clients/$CLIENT_NAME.ovpn"
-SCRIPT_EOF
-SCRIPT_EOF
-SCRIPT_EOF
-EOF
+VPNSCRIPT
     
     chmod +x $SCRIPT_DIR/generate-vpn-client.sh
 }
@@ -832,7 +755,7 @@ phase4_database_setup() {
 
 setup_mongodb() {
     # Create MongoDB initialization script
-    cat << EOF_UNIQ14_EOF> $SYSTEM_DIR/mongodb/mongo-init.js
+    cat << EOF > $SYSTEM_DIR/mongodb/mongo-init.js
 // Create application database and user
 db = db.getSiblingDB('mikrotik_vpn');
 
@@ -866,10 +789,10 @@ db.users.createIndex({ "username": 1 }, { unique: true });
 db.vouchers.createIndex({ "code": 1 }, { unique: true });
 db.sessions.createIndex({ "user_id": 1 });
 db.logs.createIndex({ "timestamp": -1 });
-EOF_UNIQ14_EOF
+EOF
     
     # Create MongoDB Docker Compose
-    cat << EOF_UNIQ15_EOF> $SYSTEM_DIR/docker-compose-mongodb.yml
+    cat << EOF > $SYSTEM_DIR/docker-compose-mongodb.yml
 version: '3.8'
 
 services:
@@ -891,7 +814,7 @@ services:
     networks:
       - mikrotik-vpn-net
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongo localhost:27017/test --quiet
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
       interval: 30s
       timeout: 10s
       retries: 5
@@ -916,16 +839,12 @@ services:
 networks:
   mikrotik-vpn-net:
     external: true
-EOF_UNIQ15_EOF
+EOF
 }
 
 setup_redis() {
-    # Load environment variables first
-    if [ -f "/opt/mikrotik-vpn/configs/setup.env" ]; then
-        source /opt/mikrotik-vpn/configs/setup.env
-    fi
-
-    cat << EOF_UNIQ16_EOF> $SYSTEM_DIR/redis/redis.conf
+    # Create Redis configuration
+    cat << EOF > $SYSTEM_DIR/redis/redis.conf
 # Redis Configuration
 bind 0.0.0.0
 protected-mode yes
@@ -954,10 +873,10 @@ maxmemory-policy allkeys-lru
 tcp-backlog 511
 timeout 0
 tcp-keepalive 300
-EOF_UNIQ16_EOF
+EOF
     
     # Create Redis Docker Compose
-    cat << EOF_UNIQ17_EOF> $SYSTEM_DIR/docker-compose-redis.yml
+    cat << EOF > $SYSTEM_DIR/docker-compose-redis.yml
 version: '3.8'
 
 services:
@@ -989,7 +908,7 @@ services:
       - HTTP_USER=admin
       - HTTP_PASSWORD=$REDIS_PASSWORD
     ports:
-      - "127.0.0.1:8081:8081"
+      - "127.0.0.1:8082:8081"
     networks:
       - mikrotik-vpn-net
     depends_on:
@@ -998,7 +917,7 @@ services:
 networks:
   mikrotik-vpn-net:
     external: true
-EOF_UNIQ17_EOF
+EOF
 }
 
 # =============================================================================
@@ -1021,7 +940,7 @@ phase5_webserver_setup() {
 
 setup_nginx() {
     # Create main Nginx configuration
-    cat << 'EOF_UNIQ18_EOF'> $SYSTEM_DIR/nginx/nginx.conf
+    cat << 'EOF' > $SYSTEM_DIR/nginx/nginx.conf
 user nginx;
 worker_processes auto;
 worker_rlimit_nofile 65535;
@@ -1076,10 +995,10 @@ http {
     # Include site configurations
     include /etc/nginx/conf.d/*.conf;
 }
-EOF_UNIQ18_EOF
+EOF
 
     # Create site configuration
-    cat << EOF_UNIQ19_EOF> $SYSTEM_DIR/nginx/conf.d/mikrotik-vpn.conf
+    cat << EOF > $SYSTEM_DIR/nginx/conf.d/mikrotik-vpn.conf
 # HTTP to HTTPS redirect
 server {
     listen 80;
@@ -1094,7 +1013,7 @@ server {
     
     # Redirect all other HTTP traffic to HTTPS
     location / {
-        return 301 https://\\$server_name\\$request_uri;
+        return 301 https://\$server_name\$request_uri;
     }
 }
 
@@ -1209,10 +1128,10 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
-EOF_UNIQ19_EOF
+EOF
 
     # Create Docker Compose for Nginx
-    cat << 'EOF_UNIQ20_EOF'> $SYSTEM_DIR/docker-compose-nginx.yml
+    cat << 'EOF' > $SYSTEM_DIR/docker-compose-nginx.yml
 version: '3.8'
 
 services:
@@ -1246,7 +1165,7 @@ volumes:
 networks:
   mikrotik-vpn-net:
     external: true
-EOF_UNIQ20_EOF
+EOF
 }
 
 setup_ssl_certificates() {
@@ -1259,7 +1178,7 @@ setup_ssl_certificates() {
         -addext "subjectAltName=DNS:$DOMAIN_NAME,DNS:admin.$DOMAIN_NAME"
     
     # Create Certbot Docker Compose
-    cat << EOF_UNIQ21_EOF> $SYSTEM_DIR/docker-compose-certbot.yml
+    cat << EOF > $SYSTEM_DIR/docker-compose-certbot.yml
 version: '3.8'
 
 services:
@@ -1279,10 +1198,10 @@ volumes:
 networks:
   mikrotik-vpn-net:
     external: true
-EOF_UNIQ21_EOF
+EOF
 
     # Create SSL renewal script
-    cat << 'EOF_UNIQ22_EOF'> $SCRIPT_DIR/renew-ssl-certificates.sh
+    cat << 'EOF' > $SCRIPT_DIR/renew-ssl-certificates.sh
 #!/bin/bash
 # SSL Certificate renewal script
 
@@ -1318,7 +1237,7 @@ else
 fi
 
 log "SSL certificate renewal completed"
-EOF_UNIQ22_EOF
+EOF
 
     chmod +x $SCRIPT_DIR/renew-ssl-certificates.sh
 }
@@ -1357,7 +1276,7 @@ install_nodejs() {
 
 create_application_structure() {
     # Create package.json
-    cat << 'EOF_UNIQ23_EOF'> $SYSTEM_DIR/app/package.json
+    cat << 'EOF' > $SYSTEM_DIR/app/package.json
 {
   "name": "mikrotik-vpn-management",
   "version": "2.0.0",
@@ -1391,10 +1310,10 @@ create_application_structure() {
     "node": ">=20.0.0"
   }
 }
-EOF_UNIQ23_EOF
+EOF
 
     # Create main server file
-    cat << 'EOF_UNIQ24_EOF'> $SYSTEM_DIR/app/server.js
+    cat << 'EOF' > $SYSTEM_DIR/app/server.js
 const express = require('express');
 const mongoose = require('mongoose');
 const redis = require('redis');
@@ -1626,10 +1545,10 @@ module.exports = { app, io };
 if (process.env.NODE_ENV !== 'test') {
     startServer();
 }
-EOF_UNIQ24_EOF
+EOF
 
     # Create environment configuration
-    cat << EOF_UNIQ25_EOF> $SYSTEM_DIR/app/.env
+    cat << EOF > $SYSTEM_DIR/app/.env
 # Application Configuration
 NODE_ENV=production
 PORT=3000
@@ -1666,10 +1585,10 @@ API_KEY=$(openssl rand -base64 32)
 
 # Logging
 LOG_LEVEL=info
-EOF_UNIQ25_EOF
+EOF
 
     # Create Dockerfile for application
-    cat << 'EOF_UNIQ26_EOF'> $SYSTEM_DIR/app/Dockerfile
+    cat << 'EOF' > $SYSTEM_DIR/app/Dockerfile
 FROM node:20-alpine
 
 # Install system dependencies
@@ -1707,10 +1626,10 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 
 # Start application
 CMD ["npm", "start"]
-EOF_UNIQ26_EOF
+EOF
 
     # Create Docker Compose for application
-    cat << 'EOF_UNIQ27_EOF'> $SYSTEM_DIR/docker-compose-app.yml
+    cat << 'EOF' > $SYSTEM_DIR/docker-compose-app.yml
 version: '3.8'
 
 services:
@@ -1743,24 +1662,24 @@ services:
 networks:
   mikrotik-vpn-net:
     external: true
-EOF_UNIQ27_EOF
+EOF
 
     # Create basic route files structure
     mkdir -p $SYSTEM_DIR/app/routes
     
     # Create placeholder route files
     for route in auth devices users vouchers monitoring admin; do
-    cat << EOF_UNIQ28_EOF> $SYSTEM_DIR/app/routes/$route.js
+    cat << EOF > $SYSTEM_DIR/app/routes/$route.js
 const express = require('express');
 const router = express.Router();
 
 // Placeholder route
 router.get('/', (req, res) => {
-    res.json({ message: `${route} route` });
+    res.json({ message: '${route} route' });
 });
 
 module.exports = router;
-EOF_UNIQ28_EOF
+EOF
     done
     
     chown -R mikrotik-vpn:mikrotik-vpn $SYSTEM_DIR/app
@@ -1789,7 +1708,7 @@ phase7_monitoring_setup() {
 
 setup_prometheus() {
     # Prometheus configuration
-    cat << 'EOF_UNIQ29_EOF'> $SYSTEM_DIR/monitoring/prometheus/prometheus.yml
+    cat << 'EOF' > $SYSTEM_DIR/monitoring/prometheus/prometheus.yml
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
@@ -1843,10 +1762,10 @@ scrape_configs:
     static_configs:
       - targets: ['app:3000']
     metrics_path: '/metrics'
-EOF_UNIQ29_EOF
+EOF
 
     # Create alert rules
-    cat << 'EOF_UNIQ30_EOF'> $SYSTEM_DIR/monitoring/prometheus/rules/alerts.yml
+    cat << 'EOF' > $SYSTEM_DIR/monitoring/prometheus/rules/alerts.yml
 groups:
   - name: system_alerts
     interval: 30s
@@ -1858,7 +1777,7 @@ groups:
           severity: warning
         annotations:
           summary: "High CPU usage detected"
-          description: "CPU usage is above 80% (current value: {{ \$value }}%)"
+          description: "CPU usage is above 80% (current value: {{ $value }}%)"
 
       - alert: HighMemoryUsage
         expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
@@ -1867,7 +1786,7 @@ groups:
           severity: warning
         annotations:
           summary: "High memory usage detected"
-          description: "Memory usage is above 85% (current value: {{ \$value }}%)"
+          description: "Memory usage is above 85% (current value: {{ $value }}%)"
 
       - alert: DiskSpaceLow
         expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 20
@@ -1876,7 +1795,7 @@ groups:
           severity: critical
         annotations:
           summary: "Low disk space"
-          description: "Disk space is below 20% (current value: {{ \$value }}%)"
+          description: "Disk space is below 20% (current value: {{ $value }}%)"
 
       - alert: ServiceDown
         expr: up == 0
@@ -1885,7 +1804,7 @@ groups:
           severity: critical
         annotations:
           summary: "Service is down"
-          description: "{{ \$labels.job }} on {{ \$labels.instance }} is down"
+          description: "{{ $labels.job }} on {{ $labels.instance }} is down"
 
   - name: vpn_alerts
     interval: 30s
@@ -1897,7 +1816,7 @@ groups:
           severity: warning
         annotations:
           summary: "High VPN connections"
-          description: "VPN connections approaching limit (current: {{ \$value }})"
+          description: "VPN connections approaching limit (current: {{ $value }})"
 
       - alert: VPNServiceDown
         expr: up{job="openvpn"} == 0
@@ -1936,13 +1855,13 @@ groups:
           severity: warning
         annotations:
           summary: "MongoDB high connections"
-          description: "MongoDB has {{ \$value }} active connections"
-EOF_UNIQ30_EOF
+          description: "MongoDB has {{ $value }} active connections"
+EOF
 }
 
 setup_grafana() {
     # Grafana datasource configuration
-    cat << 'EOF_UNIQ31_EOF'> $SYSTEM_DIR/monitoring/grafana/provisioning/datasources/prometheus.yml
+    cat << 'EOF' > $SYSTEM_DIR/monitoring/grafana/provisioning/datasources/prometheus.yml
 apiVersion: 1
 
 datasources:
@@ -1952,10 +1871,10 @@ datasources:
     url: http://prometheus:9090
     isDefault: true
     editable: true
-EOF_UNIQ31_EOF
+EOF
 
     # Dashboard provisioning
-    cat << 'EOF_UNIQ32_EOF'> $SYSTEM_DIR/monitoring/grafana/provisioning/dashboards/dashboard.yml
+    cat << 'EOF' > $SYSTEM_DIR/monitoring/grafana/provisioning/dashboards/dashboard.yml
 apiVersion: 1
 
 providers:
@@ -1968,10 +1887,10 @@ providers:
     allowUiUpdates: true
     options:
       path: /var/lib/grafana/dashboards
-EOF_UNIQ32_EOF
+EOF
 
     # Create main dashboard
-    cat << 'EOF_UNIQ33_EOF'> $SYSTEM_DIR/monitoring/grafana/dashboards/mikrotik-vpn-overview.json
+    cat << 'EOF' > $SYSTEM_DIR/monitoring/grafana/dashboards/mikrotik-vpn-overview.json
 {
   "dashboard": {
     "id": null,
@@ -2086,12 +2005,12 @@ EOF_UNIQ32_EOF
     ]
   }
 }
-EOF_UNIQ33_EOF
+EOF
 }
 
 setup_alertmanager() {
     # Create Alertmanager configuration
-    cat << EOF_UNIQ34_EOF> $SYSTEM_DIR/monitoring/alertmanager.yml
+    cat << EOF > $SYSTEM_DIR/monitoring/alertmanager.yml
 global:
   resolve_timeout: 5m
   smtp_from: '$ADMIN_EMAIL'
@@ -2133,10 +2052,10 @@ inhibit_rules:
     target_match:
       severity: 'warning'
     equal: ['alertname', 'dev', 'instance']
-EOF_UNIQ34_EOF
+EOF
 
     # Create monitoring Docker Compose
-    cat << EOF_UNIQ35_EOF> $SYSTEM_DIR/docker-compose-monitoring.yml
+    cat << EOF > $SYSTEM_DIR/docker-compose-monitoring.yml
 version: '3.8'
 
 services:
@@ -2276,7 +2195,7 @@ volumes:
 networks:
   mikrotik-vpn-net:
     external: true
-EOF_UNIQ35_EOF
+EOF
 
     chown -R mikrotik-vpn:mikrotik-vpn $SYSTEM_DIR/monitoring
 }
@@ -2343,7 +2262,7 @@ setup_firewall() {
 
 setup_fail2ban() {
     # Create custom jail configuration
-    cat << EOF_UNIQ36_EOF> /etc/fail2ban/jail.local
+    cat << EOF > /etc/fail2ban/jail.local
 [DEFAULT]
 bantime = 3600
 findtime = 600
@@ -2403,25 +2322,25 @@ filter = mongodb-auth
 port = 27017
 logpath = $SYSTEM_DIR/mongodb/logs/mongod.log
 maxretry = 3
-EOF_UNIQ36_EOF
+EOF
 
     # Create OpenVPN filter
-    cat << 'EOF_UNIQ37_EOF'> /etc/fail2ban/filter.d/openvpn.conf
+    cat << 'EOF' > /etc/fail2ban/filter.d/openvpn.conf
 [Definition]
 failregex = ^.*<HOST>:[0-9]{4,5} TLS Auth Error.*$
             ^.*<HOST>:[0-9]{4,5} VERIFY ERROR.*$
             ^.*<HOST>:[0-9]{4,5} TLS Error: TLS handshake failed$
             ^.*<HOST>:[0-9]{4,5} Connection reset, restarting.*$
 ignoreregex =
-EOF_UNIQ37_EOF
+EOF
 
     # Create MongoDB filter
-    cat << 'EOF_UNIQ38_EOF'> /etc/fail2ban/filter.d/mongodb-auth.conf
+    cat << 'EOF' > /etc/fail2ban/filter.d/mongodb-auth.conf
 [Definition]
 failregex = ^.*authentication failed.*from client <HOST>.*$
             ^.*Failed to authenticate.*from client <HOST>.*$
 ignoreregex =
-EOF_UNIQ38_EOF
+EOF
 
     # Restart and enable Fail2ban
     systemctl restart fail2ban
@@ -2436,9 +2355,7 @@ harden_ssh() {
     cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%Y%m%d_%H%M%S)
     
     # Create hardened SSH configuration
-    ssh-keygen -A
-
-    cat << EOF_UNIQ39_EOF> /etc/ssh/sshd_config.d/99-mikrotik-vpn-hardening.conf
+    cat << EOF > /etc/ssh/sshd_config.d/99-mikrotik-vpn-hardening.conf
 # SSH Hardening for MikroTik VPN System
 Port $SSH_PORT
 Protocol 2
@@ -2483,7 +2400,7 @@ ClientAliveCountMax 2
 UseDNS no
 
 # User restrictions
-AllowUsers mikrotik-vpn \${SUDO_USER:-root}
+AllowUsers mikrotik-vpn ${SUDO_USER:-root}
 
 # Logging
 SyslogFacility AUTH
@@ -2496,10 +2413,10 @@ KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp521,
 
 # Banner
 Banner /etc/issue.net
-EOF_UNIQ39_EOF
+EOF
 
     # Create login banner
-    cat << 'EOF_UNIQ40_EOF'> /etc/issue.net
+    cat << 'EOF' > /etc/issue.net
 ******************************************************************************
                         AUTHORIZED ACCESS ONLY
 
@@ -2510,7 +2427,7 @@ disconnect immediately.
 
                     MikroTik VPN Management System
 ******************************************************************************
-EOF_UNIQ40_EOF
+EOF
 
     # Test SSH configuration
     sshd -t
@@ -2533,14 +2450,14 @@ setup_intrusion_detection() {
     cp /var/lib/aide/aide.db.new /var/lib/aide/aide.db
     
     # Create AIDE configuration
-    cat << 'EOF_UNIQ41_EOF'> /etc/aide/aide.conf.d/99-mikrotik-vpn
+    cat << 'EOF' > /etc/aide/aide.conf.d/99-mikrotik-vpn
 # MikroTik VPN System AIDE Rules
 /opt/mikrotik-vpn/configs$ VarDir
 /opt/mikrotik-vpn/scripts$ BinDir
 /opt/mikrotik-vpn/ssl$ VarDir
 /opt/mikrotik-vpn/*.yml$ ConfFiles
 /var/log/mikrotik-vpn$ Logs
-EOF_UNIQ41_EOF
+EOF
     
     # Setup ClamAV
     log "Setting up ClamAV..."
@@ -2549,7 +2466,7 @@ EOF_UNIQ41_EOF
     systemctl start clamav-freshclam
     
     # Create virus scan script
-    cat << 'EOF_UNIQ42_EOF'> $SCRIPT_DIR/virus-scan.sh
+    cat << 'EOF' > $SCRIPT_DIR/virus-scan.sh
 #!/bin/bash
 # Virus scan script
 
@@ -2574,7 +2491,7 @@ for dir in $SCAN_DIRS; do
 done
 
 log "Virus scan completed"
-EOF_UNIQ42_EOF
+EOF
     
     chmod +x $SCRIPT_DIR/virus-scan.sh
     
@@ -2584,7 +2501,7 @@ EOF_UNIQ42_EOF
     rkhunter --propupd
     
     # Create security audit script
-    cat << 'EOF_UNIQ43_EOF'> $SCRIPT_DIR/security-audit.sh
+    cat << 'EOF' > $SCRIPT_DIR/security-audit.sh
 #!/bin/bash
 # Security audit script
 
@@ -2621,7 +2538,7 @@ log "Running AIDE check..."
 aide --check >> $LOG_FILE 2>&1
 
 log "Security audit completed"
-EOF_UNIQ43_EOF
+EOF
     
     chmod +x $SCRIPT_DIR/security-audit.sh
 }
@@ -2649,7 +2566,7 @@ phase9_backup_setup() {
 
 create_backup_system() {
     # Main backup script
-    cat << 'EOF_UNIQ44_EOF'> $SCRIPT_DIR/backup-system.sh
+    cat << 'EOF' > $SCRIPT_DIR/backup-system.sh
 #!/bin/bash
 # MikroTik VPN System Comprehensive Backup Script
 
@@ -2756,7 +2673,7 @@ tar -czf $BACKUP_PATH/logs.tar.gz \
 
 # 8. System information
 log "Collecting system information..."
-cat << SYSINFO_UNIQ45_EOF> $BACKUP_PATH/system_info.txt
+cat << SYSINFO > $BACKUP_PATH/system_info.txt
 Backup Date: $(date)
 Hostname: $(hostname)
 System: $(lsb_release -d | cut -f2)
@@ -2774,11 +2691,11 @@ $(docker images)
 Network Configuration:
 $(ip addr show)
 $(ip route show)
-SYSINFO_UNIQ45_EOF
+SYSINFO
 
 # 9. Create backup manifest
 log "Creating backup manifest..."
-cat << MANIFEST_UNIQ46_EOF> $BACKUP_PATH/manifest.json
+cat << MANIFEST > $BACKUP_PATH/manifest.json
 {
   "backup_date": "$(date -Iseconds)",
   "backup_type": "$BACKUP_TYPE",
@@ -2795,7 +2712,7 @@ cat << MANIFEST_UNIQ46_EOF> $BACKUP_PATH/manifest.json
     "monitoring"
   ]
 }
-MANIFEST_UNIQ46_EOF
+MANIFEST
 
 # 10. Restart services
 log "Restarting services..."
@@ -2841,7 +2758,7 @@ BACKUP_SIZE=$(du -h $BACKUP_DIR/$BACKUP_TYPE/backup_$DATE.tar.gz | cut -f1)
 # 17. Send notification
 log "Sending backup notification..."
 if command -v mail >/dev/null 2>&1; then
-cat << MAIL_UNIQ47_EOF| mail -s "[MikroTik VPN] Backup Completed - $BACKUP_TYPE" "$ADMIN_EMAIL"
+cat << MAIL | mail -s "[MikroTik VPN] Backup Completed - $BACKUP_TYPE" "$ADMIN_EMAIL"
 Backup completed successfully!
 
 Type: $BACKUP_TYPE
@@ -2854,7 +2771,7 @@ $(docker ps --format "table {{.Names}}\t{{.Status}}" | grep mikrotik)
 
 Disk Usage:
 $(df -h $BACKUP_DIR)
-MAIL_UNIQ47_EOF
+MAIL
 fi
 
 log "=== Backup Summary ==="
@@ -2868,7 +2785,7 @@ EOF
     chmod +x $SCRIPT_DIR/backup-system.sh
 
     # Restore script
-    cat << 'EOF_UNIQ48_EOF'> $SCRIPT_DIR/restore-system.sh
+    cat << 'EOF' > $SCRIPT_DIR/restore-system.sh
 #!/bin/bash
 # MikroTik VPN System Restore Script
 
@@ -3147,14 +3064,14 @@ main() {
 }
 
 main "$@"
-EOF_UNIQ48_EOF
+EOF
 
     chmod +x $SCRIPT_DIR/restore-system.sh
 }
 
 setup_backup_automation() {
     # Create cron jobs for automated backups
-    cat << EOF_UNIQ49_EOF> /etc/cron.d/mikrotik-vpn-backup
+    cat << EOF > /etc/cron.d/mikrotik-vpn-backup
 # MikroTik VPN System Backup Schedule
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
@@ -3168,10 +3085,10 @@ MAILTO=$ADMIN_EMAIL
 
 # Monthly backup verification at 4:00 AM on the 1st
 0 4 1 * * mikrotik-vpn /opt/mikrotik-vpn/scripts/verify-backups.sh >> /var/log/mikrotik-vpn/backup-verify.log 2>&1
-EOF_UNIQ49_EOF
+EOF
 
     # Create cleanup script
-    cat << 'EOF_UNIQ50_EOF'> $SCRIPT_DIR/cleanup-old-backups.sh
+    cat << 'EOF' > $SCRIPT_DIR/cleanup-old-backups.sh
 #!/bin/bash
 # Old backup cleanup script
 
@@ -3260,12 +3177,12 @@ if [ "$DISK_USAGE" -gt 80 ]; then
 fi
 
 log "Backup cleanup completed"
-EOF_UNIQ50_EOF
+EOF
 
     chmod +x $SCRIPT_DIR/cleanup-old-backups.sh
 
     # Create backup verification script
-    cat << 'EOF_UNIQ51_EOF'> $SCRIPT_DIR/verify-backups.sh
+    cat << 'EOF' > $SCRIPT_DIR/verify-backups.sh
 #!/bin/bash
 # Backup verification script
 
@@ -3339,12 +3256,12 @@ else
 fi
 
 log "Backup verification completed"
-EOF_UNIQ51_EOF
+EOF
 
     chmod +x $SCRIPT_DIR/verify-backups.sh
 
     # Create logrotate configuration
-    cat << EOF_UNIQ52_EOF> /etc/logrotate.d/mikrotik-vpn
+    cat << EOF > /etc/logrotate.d/mikrotik-vpn
 /var/log/mikrotik-vpn/*.log {
     daily
     missingok
@@ -3360,12 +3277,12 @@ EOF_UNIQ51_EOF
         docker exec mikrotik-app pm2 flush >/dev/null 2>&1 || true
     endscript
 }
-EOF_UNIQ52_EOF
+EOF
 }
 
 create_disaster_recovery() {
     # Create disaster recovery documentation
-    cat << EOF_UNIQ53_EOF> $SYSTEM_DIR/DISASTER_RECOVERY.md
+    cat << EOF > $SYSTEM_DIR/DISASTER_RECOVERY.md
 # MikroTik VPN System Disaster Recovery Guide
 
 ## Overview
@@ -3380,7 +3297,7 @@ This guide provides procedures for recovering the MikroTik VPN Management System
 ### 1. Complete System Failure
 1. Install fresh Ubuntu 22.04 LTS
 2. Download installation script
-3. Run: sudo ./install-mikrotik-vpn.sh
+3. Run: sudo ./mikrotik-vpn-installer-fixed.sh
 4. Restore from backup: sudo /opt/mikrotik-vpn/scripts/restore-system.sh restore <backup_file>
 
 ### 2. Database Corruption
@@ -3420,10 +3337,10 @@ This guide provides procedures for recovering the MikroTik VPN Management System
 [ ] Verify backup automation
 
 Generated on: $(date)
-EOF_UNIQ53_EOF
+EOF
 
     # Create emergency recovery script
-    cat << 'EOF_UNIQ54_EOF'> $SCRIPT_DIR/emergency-recovery.sh
+    cat << 'EOF' > $SCRIPT_DIR/emergency-recovery.sh
 #!/bin/bash
 # Emergency recovery script for critical failures
 
@@ -3482,7 +3399,7 @@ sleep 30
 $SYSTEM_DIR/scripts/health-check.sh
 
 log "Emergency recovery completed"
-EOF_UNIQ54_EOF
+EOF
 
     chmod +x $SCRIPT_DIR/emergency-recovery.sh
 }
@@ -3513,7 +3430,7 @@ phase10_management_scripts() {
 
 create_management_scripts() {
     # Master control script
-    cat << 'EOF_UNIQ55_EOF'> $SYSTEM_DIR/mikrotik-vpn-manager.sh
+    cat << 'EOF' > $SYSTEM_DIR/mikrotik-vpn-manager.sh
 #!/bin/bash
 # MikroTik VPN System Master Management Script
 
@@ -3856,7 +3773,7 @@ main() {
 
 # Run main function
 main "$@"
-EOF_UNIQ55_EOF
+EOF
 
     chmod +x $SYSTEM_DIR/mikrotik-vpn-manager.sh
     
@@ -3864,7 +3781,7 @@ EOF_UNIQ55_EOF
     ln -sf $SYSTEM_DIR/mikrotik-vpn-manager.sh /usr/local/bin/mikrotik-vpn
 
     # Create start/stop service scripts
-    cat << 'EOF_UNIQ56_EOF'> $SCRIPT_DIR/start-all-services.sh
+    cat << 'EOF' > $SCRIPT_DIR/start-all-services.sh
 #!/bin/bash
 # Start all services script
 
@@ -3898,11 +3815,11 @@ echo "Starting monitoring..."
 docker compose -f docker-compose-monitoring.yml up -d
 
 echo "All services started!"
-EOF_UNIQ56_EOF
+EOF
 
     chmod +x $SCRIPT_DIR/start-all-services.sh
 
-    cat << 'EOF_UNIQ57_EOF'> $SCRIPT_DIR/stop-all-services.sh
+    cat << 'EOF' > $SCRIPT_DIR/stop-all-services.sh
 #!/bin/bash
 # Stop all services script
 
@@ -3921,14 +3838,14 @@ docker compose -f docker-compose-redis.yml down 2>/dev/null || true
 docker compose -f docker-compose-mongodb.yml down 2>/dev/null || true
 
 echo "All services stopped!"
-EOF_UNIQ57_EOF
+EOF
 
     chmod +x $SCRIPT_DIR/stop-all-services.sh
 }
 
 setup_system_service() {
     # Create systemd service
-    cat << EOF_UNIQ58_EOF> /etc/systemd/system/mikrotik-vpn.service
+    cat << EOF > /etc/systemd/system/mikrotik-vpn.service
 [Unit]
 Description=MikroTik VPN Management System
 After=docker.service network-online.target
@@ -3949,7 +3866,7 @@ StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
-EOF_UNIQ58_EOF
+EOF
 
     # Enable service
     systemctl daemon-reload
@@ -3960,7 +3877,7 @@ EOF_UNIQ58_EOF
 
 create_maintenance_scripts() {
     # Health check script
-    cat << 'EOF_UNIQ59_EOF'> $SCRIPT_DIR/health-check.sh
+    cat << 'EOF' > $SCRIPT_DIR/health-check.sh
 #!/bin/bash
 # Comprehensive health check script
 
@@ -3992,7 +3909,7 @@ print_warning() {
 print_fail() {
     echo -e "${RED}✗${NC} $1"
     log "✗ $1"
-    FAILED_CHECKS="$FAILED_CHECKS\n- $1"
+    FAILED_CHECKS="${FAILED_CHECKS:-}${FAILED_CHECKS:+\n}- $1"
 }
 
 check_service() {
@@ -4181,12 +4098,12 @@ main() {
 }
 
 main "$@"
-EOF_UNIQ59_EOF
+EOF
 
     chmod +x $SCRIPT_DIR/health-check.sh
 
     # System optimization script
-    cat << 'EOF_UNIQ60_EOF'> $SCRIPT_DIR/optimize-system.sh
+    cat << 'EOF' > $SCRIPT_DIR/optimize-system.sh
 #!/bin/bash
 # System optimization script
 
@@ -4252,16 +4169,19 @@ log "Current disk usage:"
 df -h | tee -a $LOG_FILE
 
 log "System optimization completed"
-EOF_UNIQ60_EOF
+EOF
 
     chmod +x $SCRIPT_DIR/optimize-system.sh
 }
 
 create_final_configuration() {
     # Create installation completion script
-    cat << 'EOF_UNIQ61_EOF'> $SCRIPT_DIR/complete-installation.sh
+    cat << 'COMPLETION_SCRIPT' > $SCRIPT_DIR/complete-installation.sh
 #!/bin/bash
 # Installation completion script
+
+# Load configuration
+source /opt/mikrotik-vpn/configs/setup.env
 
 echo "==================================================================="
 echo "MikroTik VPN Management System Installation Complete!"
@@ -4311,7 +4231,7 @@ echo "Documentation: /opt/mikrotik-vpn/DISASTER_RECOVERY.md"
 echo
 echo "IMPORTANT: Change all default passwords immediately!"
 echo "==================================================================="
-EOF_UNIQ61_EOF
+COMPLETION_SCRIPT
 
     chmod +x $SCRIPT_DIR/complete-installation.sh
 }
@@ -4364,5 +4284,6 @@ main() {
     log "Installation completed successfully!"
 }
 
+# Run main function
 main "$@"
 exit 0
