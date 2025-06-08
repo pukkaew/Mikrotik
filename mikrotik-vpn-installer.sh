@@ -409,6 +409,10 @@ phase2_docker_installation() {
     apt update
     apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     
+    # Configure Docker
+    # log "Configuring Docker..."
+    # configure_docker
+    
     # Add users to docker group
     log "Adding users to docker group..."
     if [ -n "$SUDO_USER" ]; then
@@ -416,7 +420,7 @@ phase2_docker_installation() {
     fi
     usermod -aG docker mikrotik-vpn
     
-    # Enable and Start Docker
+    # Start Docker
     # log "Starting Docker..."
     # systemctl enable docker
     # systemctl start docker
