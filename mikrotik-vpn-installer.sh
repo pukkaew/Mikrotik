@@ -396,47 +396,30 @@ phase2_docker_installation() {
     log "PHASE 2: DOCKER INSTALLATION"
     log "==================================================================="
     
-    # Add Docker repository
-    log "Adding Docker repository..."
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-    
-    echo \
-      "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
-      $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-    
-    # Install Docker
-    log "Installing Docker Engine..."
-    apt update
-    apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-    
-    # Configure Docker daemon (optional - skip if causes issues)
-    log "Configuring Docker daemon..."
-    
-    # Check if Docker is running first
-    if systemctl is-active --quiet docker; then
-        # Create a minimal daemon.json
-        cat << 'EOF' > /etc/docker/daemon.json
-{
-  "log-driver": "json-file",
-  "log-opts": {
-    "max-size": "100m",
-    "max-file": "5"
-  }
-}
-EOF
+    # Check if Docker is already installed
+    if command -v docker &> /dev/null; then
+        log "Docker is already installed, checking version..."
+        docker --version
         
-        # Try to restart Docker, but continue if it fails
-        log "Restarting Docker with new configuration..."
-        systemctl daemon-reload
-        systemctl restart docker || {
-            log_warning "Docker restart failed, reverting configuration..."
-            rm -f /etc/docker/daemon.json
-            systemctl daemon-reload
+        # Just ensure it's running
+        systemctl enable docker
+        systemctl start docker || {
+            log_warning "Docker service failed to start, attempting to fix..."
             systemctl restart docker
-            log "Docker restarted with default configuration"
         }
     else
-        log_warning "Docker is not running, skipping daemon configuration"
+        # Add Docker repository
+        log "Adding Docker repository..."
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+        
+        echo \
+          "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
+          $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+        
+        # Install Docker
+        log "Installing Docker Engine..."
+        apt update
+        apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     fi
     
     # Add users to docker group
@@ -446,18 +429,84 @@ EOF
     fi
     usermod -aG docker mikrotik-vpn
     
-    # Start Docker
-    log "Starting Docker..."
+    # Enable Docker service
+    log "Enabling Docker service..."
     systemctl enable docker
-    systemctl start docker
+    
+    # Start Docker service with retry logic
+    log "Starting Docker service..."
+    local max_retries=3
+    local retry_count=0
+    
+    while [ $retry_count -lt $max_retries ]; do
+        if systemctl start docker; then
+            log "Docker service started successfully"
+            break
+        else
+            retry_count=$((retry_count + 1))
+            log_warning "Failed to start Docker (attempt $retry_count/$max_retries)"
+            
+            if [ $retry_count -lt $max_retries ]; then
+                log "Waiting 5 seconds before retry..."
+                sleep 5
+                
+                # Try to fix common issues
+                log "Attempting to fix Docker issues..."
+                
+                # Remove any stale Docker pid files
+                rm -f /var/run/docker.pid
+                
+                # Restart Docker daemon
+                systemctl daemon-reload
+                systemctl reset-failed docker.service
+            else
+                log_error "Failed to start Docker after $max_retries attempts"
+                log_error "Please check Docker logs: journalctl -xeu docker.service"
+                exit 1
+            fi
+        fi
+    done
+    
+    # Wait for Docker to be fully ready
+    log "Waiting for Docker to be ready..."
+    local docker_ready=false
+    for i in {1..30}; do
+        if docker version >/dev/null 2>&1; then
+            docker_ready=true
+            log "Docker is ready"
+            break
+        fi
+        sleep 1
+    done
+    
+    if [ "$docker_ready" = false ]; then
+        log_error "Docker failed to become ready after 30 seconds"
+        exit 1
+    fi
     
     # Create Docker network
     log "Creating Docker network..."
-    docker network create mikrotik-vpn-net --driver bridge --subnet=172.20.0.0/16 || true
+    docker network create mikrotik-vpn-net --driver bridge --subnet=172.20.0.0/16 2>/dev/null || {
+        if docker network ls | grep -q mikrotik-vpn-net; then
+            log "Docker network already exists"
+        else
+            log_error "Failed to create Docker network"
+            exit 1
+        fi
+    }
     
     # Verify installation
+    log "Verifying Docker installation..."
     docker --version
     docker compose version
+    
+    # Test Docker functionality
+    log "Testing Docker functionality..."
+    if docker run --rm hello-world >/dev/null 2>&1; then
+        log "Docker is working correctly"
+    else
+        log_warning "Docker test failed, but continuing..."
+    fi
     
     log "Phase 2 completed successfully!"
 }
