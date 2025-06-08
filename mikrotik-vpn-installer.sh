@@ -409,34 +409,8 @@ phase2_docker_installation() {
     apt update
     apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     
-    # Configure Docker
-    log "Configuring Docker..."
-    configure_docker
-    
-    # Add users to docker group
-    log "Adding users to docker group..."
-    if [ -n "$SUDO_USER" ]; then
-        usermod -aG docker $SUDO_USER
-    fi
-    usermod -aG docker mikrotik-vpn
-    
-    # Start Docker
-    log "Starting Docker..."
-    systemctl enable docker
-    systemctl start docker
-    
-    # Create Docker network
-    log "Creating Docker network..."
-    docker network create mikrotik-vpn-net --driver bridge --subnet=172.20.0.0/16 || true
-    
-    # Verify installation
-    docker --version
-    docker compose version
-    
-    log "Phase 2 completed successfully!"
-}
-
-configure_docker() {
+    # Configure Docker daemon
+    log "Configuring Docker daemon..."
     cat << 'EOF' > /etc/docker/daemon.json
 {
   "log-driver": "json-file",
@@ -460,8 +434,32 @@ configure_docker() {
   "experimental": false
 }
 EOF
-
+    
+    # Reload daemon and restart Docker
+    systemctl daemon-reload
     systemctl restart docker
+    
+    # Add users to docker group
+    log "Adding users to docker group..."
+    if [ -n "$SUDO_USER" ]; then
+        usermod -aG docker $SUDO_USER
+    fi
+    usermod -aG docker mikrotik-vpn
+    
+    # Start Docker
+    log "Starting Docker..."
+    systemctl enable docker
+    systemctl start docker
+    
+    # Create Docker network
+    log "Creating Docker network..."
+    docker network create mikrotik-vpn-net --driver bridge --subnet=172.20.0.0/16 || true
+    
+    # Verify installation
+    docker --version
+    docker compose version
+    
+    log "Phase 2 completed successfully!"
 }
 
 # =============================================================================
