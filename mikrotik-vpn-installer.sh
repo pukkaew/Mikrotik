@@ -2453,9 +2453,33 @@ EOF
     
     # Setup ClamAV
     log "Setting up ClamAV..."
-    freshclam
-    systemctl enable clamav-freshclam
-    systemctl start clamav-freshclam
+    
+    # Stop ClamAV services first to release locks
+    systemctl stop clamav-freshclam 2>/dev/null || true
+    systemctl stop clamav-daemon 2>/dev/null || true
+    
+    # Fix permissions and remove lock files
+    mkdir -p /var/log/clamav
+    chown -R clamav:clamav /var/log/clamav
+    rm -f /var/log/clamav/freshclam.log.lock 2>/dev/null || true
+    
+    # Update virus definitions
+    freshclam || {
+        log_warning "Failed to update ClamAV definitions, trying alternative method..."
+        # Try to fix common issues
+        mkdir -p /var/lib/clamav
+        chown -R clamav:clamav /var/lib/clamav
+        chmod 755 /var/lib/clamav
+        
+        # Try again with sudo
+        sudo -u clamav freshclam || {
+            log_warning "ClamAV update failed, continuing without virus definitions update"
+        }
+    }
+    
+    # Enable and start services
+    systemctl enable clamav-freshclam 2>/dev/null || true
+    systemctl start clamav-freshclam 2>/dev/null || true
     
     # Create virus scan script
     cat << 'EOF' > $SCRIPT_DIR/virus-scan.sh
