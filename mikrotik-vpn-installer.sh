@@ -2331,10 +2331,15 @@ harden_ssh() {
         systemctl start ssh
     fi
     
-    # Backup original SSH config
+    # Backup original SSH config only if it exists
     if [ -f "/etc/ssh/sshd_config" ]; then
         cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%Y%m%d_%H%M%S)
+    else
+        log_warning "No sshd_config to backup, creating new configuration"
     fi
+    
+    # Ensure SSH config directory exists
+    mkdir -p /etc/ssh/sshd_config.d/
     
     # Create hardened SSH configuration
     cat << EOF > /etc/ssh/sshd_config.d/99-mikrotik-vpn-hardening.conf
@@ -2411,20 +2416,20 @@ disconnect immediately.
 ******************************************************************************
 EOF
 
-    # Test SSH configuration
+    # Test SSH configuration if sshd exists
     if command -v sshd >/dev/null 2>&1; then
         sshd -t
         
         if [ $? -eq 0 ]; then
-            systemctl restart sshd || systemctl restart ssh
+            systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || {
+                log_warning "Could not restart SSH service, please restart manually"
+            }
             log "SSH hardening completed successfully"
         else
-            log_error "SSH configuration test failed"
-            # Don't exit, just warn
-            log_warning "Continuing with installation despite SSH config issues"
+            log_warning "SSH configuration test failed, but continuing installation"
         fi
     else
-        log_warning "SSH daemon not found, skipping SSH hardening"
+        log_warning "SSH daemon not found, skipping SSH configuration test"
     fi
 }
 
