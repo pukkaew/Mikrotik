@@ -2437,9 +2437,24 @@ setup_intrusion_detection() {
     # Setup AIDE
     log "Setting up AIDE..."
     
-    # Initialize AIDE database
-    aideinit
-    cp /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+    # Initialize AIDE database with automatic yes
+    yes | aideinit || {
+        log_warning "AIDE initialization had warnings (return code: $?)"
+        # AIDE often returns non-zero even on success, so we check if the database was created
+        if [ -f "/var/lib/aide/aide.db.new" ]; then
+            log "AIDE database created successfully"
+        else
+            log_warning "AIDE database creation may have failed, continuing anyway"
+        fi
+    }
+    
+    # Copy the new database to be the current database
+    if [ -f "/var/lib/aide/aide.db.new" ]; then
+        cp /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+        log "AIDE database installed"
+    else
+        log_warning "AIDE database not found, skipping AIDE setup"
+    fi
     
     # Create AIDE configuration
     cat << 'EOF' > /etc/aide/aide.conf.d/99-mikrotik-vpn
