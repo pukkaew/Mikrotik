@@ -409,35 +409,35 @@ phase2_docker_installation() {
     apt update
     apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     
-    # Configure Docker daemon
+    # Configure Docker daemon (optional - skip if causes issues)
     log "Configuring Docker daemon..."
-    cat << 'EOF' > /etc/docker/daemon.json
+    
+    # Check if Docker is running first
+    if systemctl is-active --quiet docker; then
+        # Create a minimal daemon.json
+        cat << 'EOF' > /etc/docker/daemon.json
 {
   "log-driver": "json-file",
   "log-opts": {
     "max-size": "100m",
     "max-file": "5"
-  },
-  "storage-driver": "overlay2",
-  "storage-opts": [
-    "overlay2.override_kernel_check=true"
-  ],
-  "default-ulimits": {
-    "nofile": {
-      "Name": "nofile",
-      "Hard": 64000,
-      "Soft": 64000
-    }
-  },
-  "live-restore": true,
-  "userland-proxy": false,
-  "experimental": false
+  }
 }
 EOF
-    
-    # Reload daemon and restart Docker
-    systemctl daemon-reload
-    systemctl restart docker
+        
+        # Try to restart Docker, but continue if it fails
+        log "Restarting Docker with new configuration..."
+        systemctl daemon-reload
+        systemctl restart docker || {
+            log_warning "Docker restart failed, reverting configuration..."
+            rm -f /etc/docker/daemon.json
+            systemctl daemon-reload
+            systemctl restart docker
+            log "Docker restarted with default configuration"
+        }
+    else
+        log_warning "Docker is not running, skipping daemon configuration"
+    fi
     
     # Add users to docker group
     log "Adding users to docker group..."
