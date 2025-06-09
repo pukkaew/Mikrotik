@@ -733,13 +733,60 @@ phase3_docker_installation() {
     log "PHASE 3: DOCKER INSTALLATION"
     log "==================================================================="
     
-    # Check if Docker is already installed
+    # Check if we're in a container or WSL environment
+    if [[ -f /.dockerenv ]] || grep -q microsoft /proc/version 2>/dev/null; then
+        log_warning "Detected container or WSL environment"
+        log_warning "Docker might not work properly in this environment"
+    fi
+    
+    # Check if systemctl is working
+    if ! systemctl is-system-running &>/dev/null; then
+        log_warning "systemd is not running properly"
+        log_warning "Attempting to start Docker manually..."
+        
+        # Try to start Docker daemon manually
+        if command -v dockerd &> /dev/null; then
+            log "Starting Docker daemon in background..."
+            dockerd > /var/log/docker-manual.log 2>&1 &
+            DOCKER_PID=$!
+            sleep 10
+            
+            # Check if Docker is running
+            if docker version &>/dev/null; then
+                log "Docker is running (manual start)"
+                return 0
+            else
+                log_error "Failed to start Docker manually"
+                kill $DOCKER_PID 2>/dev/null || true
+            fi
+        fi
+    fi
+    
+    # Check if Docker is already installed and running
     if command -v docker &> /dev/null; then
         log "Docker is already installed"
         docker --version
         
-        # Fix any existing Docker issues
-        fix_docker_service
+        # Check if Docker is actually running
+        if docker ps &>/dev/null; then
+            log "Docker is running"
+            docker --version
+            docker compose version
+            create_docker_network
+            log "Phase 3 completed successfully!"
+            return 0
+        else
+            log "Docker is installed but not running"
+            # Try to start it
+            if systemctl start docker 2>/dev/null; then
+                log "Docker started successfully"
+                create_docker_network
+                log "Phase 3 completed successfully!"
+                return 0
+            else
+                log_warning "Cannot start Docker with systemctl, trying alternative methods..."
+            fi
+        fi
     else
         log "Installing Docker..."
         
@@ -798,13 +845,9 @@ phase3_docker_installation() {
   "userland-proxy": false,
   "ip-forward": true,
   "iptables": true,
-  "ipv6": false,
-  "exec-opts": ["native.cgroupdriver=systemd"]
+  "ipv6": false
 }
 EOF
-    
-    # Fix potential Docker startup issues
-    fix_docker_service
     
     # Add users to docker group
     usermod -aG docker mikrotik-vpn
@@ -812,108 +855,45 @@ EOF
         usermod -aG docker "$SUDO_USER"
     fi
     
-    # Enable and start Docker
-    log "Starting Docker service..."
-    systemctl daemon-reload
-    systemctl enable docker
+    # Try different methods to start Docker
+    log "Attempting to start Docker service..."
     
-    # Try to start Docker with retry logic
-    local max_attempts=5
-    local attempt=1
-    
-    while [[ $attempt -le $max_attempts ]]; do
-        log "Attempting to start Docker service (attempt $attempt/$max_attempts)..."
-        
-        if systemctl start docker; then
-            log "Docker service started successfully"
-            break
+    # Method 1: Try systemctl
+    if systemctl start docker 2>/dev/null; then
+        log "Docker started with systemctl"
+    else
+        # Method 2: Try service command
+        if service docker start 2>/dev/null; then
+            log "Docker started with service command"
         else
-            log_warning "Docker failed to start, attempting to fix..."
+            # Method 3: Try starting dockerd directly
+            log_warning "Starting Docker daemon manually..."
             
-            # Diagnose issues first
-            diagnose_docker_issues
+            # Kill any existing dockerd processes
+            pkill -f dockerd || true
+            sleep 2
             
-            # Get detailed error information
-            journalctl -xeu docker.service --no-pager | tail -20 >> "$LOG_FILE"
+            # Start dockerd in background
+            dockerd > /var/log/docker-manual.log 2>&1 &
+            DOCKER_PID=$!
             
-            # Try to fix common issues
-            fix_docker_service
+            # Wait for Docker to start
+            local count=0
+            while [[ $count -lt 30 ]]; do
+                if docker version &>/dev/null; then
+                    log "Docker daemon started successfully (PID: $DOCKER_PID)"
+                    break
+                fi
+                sleep 1
+                count=$((count + 1))
+            done
             
-            # For last attempt, try complete reinstall
-            if [[ $attempt -eq $max_attempts ]]; then
-                log_warning "Attempting complete Docker reinstall..."
-                
-                # Stop everything
-                systemctl stop docker docker.socket containerd 2>/dev/null || true
-                
-                # Remove and reinstall
-                apt-get remove -y docker-ce docker-ce-cli containerd.io 2>/dev/null || true
-                apt-get autoremove -y
-                rm -rf /var/lib/docker /var/lib/containerd
-                
-                # Reinstall
-                apt-get update
-                DEBIAN_FRONTEND=noninteractive apt-get install -y \
-                    docker-ce \
-                    docker-ce-cli \
-                    containerd.io \
-                    docker-buildx-plugin \
-                    docker-compose-plugin
-                
-                # Recreate daemon.json
-                cat << 'EOF' > /etc/docker/daemon.json
-{
-  "log-driver": "json-file",
-  "log-opts": {
-    "max-size": "100m",
-    "max-file": "5"
-  },
-  "storage-driver": "overlay2",
-  "storage-opts": [
-    "overlay2.override_kernel_check=true"
-  ],
-  "default-ulimits": {
-    "nofile": {
-      "Name": "nofile",
-      "Hard": 64000,
-      "Soft": 64000
-    }
-  },
-  "live-restore": true,
-  "userland-proxy": false,
-  "ip-forward": true,
-  "iptables": true,
-  "ipv6": false,
-  "exec-opts": ["native.cgroupdriver=systemd"]
-}
-EOF
-                
-                systemctl daemon-reload
+            if [[ $count -ge 30 ]]; then
+                log_error "Docker daemon failed to start after 30 seconds"
+                cat /var/log/docker-manual.log | tail -50 >> "$LOG_FILE"
+                exit 1
             fi
-            
-            # Wait before retry
-            sleep 5
-            
-            attempt=$((attempt + 1))
         fi
-    done
-    
-    if [[ $attempt -gt $max_attempts ]]; then
-        log_error "Failed to start Docker after $max_attempts attempts"
-        log_error "Please check: journalctl -xeu docker.service"
-        
-        # Show last 50 lines of Docker logs for debugging
-        echo "=== Docker Service Logs ===" >> "$LOG_FILE"
-        journalctl -xeu docker.service --no-pager -n 50 >> "$LOG_FILE"
-        
-        # Try manual diagnostic
-        log_error "Manual intervention may be required. Common solutions:"
-        log_error "1. Reboot the system: sudo reboot"
-        log_error "2. Check disk space: df -h"
-        log_error "3. Check if virtualization is enabled in BIOS"
-        log_error "4. Try: sudo dockerd --debug"
-        
-        exit 1
     fi
     
     # Verify Docker is working
@@ -922,7 +902,24 @@ EOF
         log "Docker is working correctly"
     else
         log_error "Docker test failed"
-        exit 1
+        
+        # Check what's wrong
+        if ! docker version &>/dev/null; then
+            log_error "Docker client cannot connect to daemon"
+            log_error "Trying to diagnose..."
+            
+            # Check if dockerd is running
+            if ! pgrep -f dockerd > /dev/null; then
+                log_error "Docker daemon is not running"
+            else
+                log_error "Docker daemon is running but not responding"
+            fi
+            
+            # Show docker info for debugging
+            docker version 2>&1 | tee -a "$LOG_FILE" || true
+            
+            exit 1
+        fi
     fi
     
     # Create Docker network
