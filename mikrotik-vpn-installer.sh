@@ -498,8 +498,28 @@ mikrotik-vpn soft nproc 32768
 mikrotik-vpn hard nproc 32768
 EOF
 
-    # Kernel parameters
-    cat << 'EOF' > /etc/sysctl.d/99-mikrotik-vpn.conf
+    # Load required kernel modules
+    log "Loading kernel modules..."
+    modprobe nf_conntrack
+    modprobe nf_conntrack_ipv4
+    modprobe nf_conntrack_ipv6
+    
+    # Add modules to load at boot
+    cat << 'EOF' > /etc/modules-load.d/mikrotik-vpn.conf
+# Modules required for MikroTik VPN
+nf_conntrack
+nf_conntrack_ipv4
+nf_conntrack_ipv6
+ip_tables
+iptable_nat
+iptable_filter
+EOF
+
+    # Kernel parameters - split into sections to handle errors
+    log "Applying kernel parameters..."
+    
+    # Basic network performance
+    cat << 'EOF' > /etc/sysctl.d/99-mikrotik-vpn-network.conf
 # Network Performance Tuning
 net.core.rmem_max = 134217728
 net.core.wmem_max = 134217728
@@ -514,7 +534,10 @@ net.ipv4.ip_forward = 1
 net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.conf.all.send_redirects = 0
 net.ipv6.conf.all.forwarding = 1
+EOF
 
+    # Security settings
+    cat << 'EOF' > /etc/sysctl.d/99-mikrotik-vpn-security.conf
 # Security Hardening
 net.ipv4.conf.all.rp_filter = 1
 net.ipv4.conf.default.rp_filter = 1
@@ -527,7 +550,11 @@ net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_max_syn_backlog = 2048
 net.ipv4.tcp_synack_retries = 2
 net.ipv4.tcp_syn_retries = 5
+EOF
 
+    # Connection tracking (only if module is loaded)
+    if lsmod | grep -q nf_conntrack; then
+        cat << 'EOF' > /etc/sysctl.d/99-mikrotik-vpn-conntrack.conf
 # Connection Tracking
 net.netfilter.nf_conntrack_max = 524288
 net.netfilter.nf_conntrack_tcp_timeout_established = 7200
@@ -535,8 +562,14 @@ net.netfilter.nf_conntrack_tcp_timeout_time_wait = 120
 net.netfilter.nf_conntrack_tcp_timeout_close_wait = 60
 net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 120
 EOF
+        sysctl -p /etc/sysctl.d/99-mikrotik-vpn-conntrack.conf 2>/dev/null || true
+    else
+        log_warning "Connection tracking module not loaded, skipping conntrack settings"
+    fi
 
-    sysctl -p /etc/sysctl.d/99-mikrotik-vpn.conf
+    # Apply sysctl settings
+    sysctl -p /etc/sysctl.d/99-mikrotik-vpn-network.conf
+    sysctl -p /etc/sysctl.d/99-mikrotik-vpn-security.conf
 }
 
 # =============================================================================
