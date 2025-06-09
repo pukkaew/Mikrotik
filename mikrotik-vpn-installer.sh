@@ -5627,8 +5627,20 @@ EOF
     if sshd -t; then
         # Only restart SSH if systemctl is working
         if systemctl is-system-running &>/dev/null; then
-            systemctl restart sshd
-            log "SSH hardening completed successfully"
+            # Try different service names
+            if systemctl list-units --type=service | grep -q "^ssh.service"; then
+                systemctl restart ssh
+                log "SSH hardening completed successfully (using ssh service)"
+            elif systemctl list-units --type=service | grep -q "^sshd.service"; then
+                systemctl restart sshd
+                log "SSH hardening completed successfully (using sshd service)"
+            else
+                log_warning "SSH service not found, trying service command..."
+                service ssh restart || service sshd restart || {
+                    log_warning "Could not restart SSH service, but configuration is updated"
+                    log_warning "You may need to manually restart SSH service"
+                }
+            fi
         else
             log_warning "SSH configuration updated but service not restarted (systemctl not available)"
             log "SSH hardening configuration saved"
