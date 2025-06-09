@@ -4254,13 +4254,13 @@ services:
   # ===========================================
   # SSL Certificate Management
   # ===========================================
- certbot:
+  certbot:
     image: certbot/certbot
     container_name: mikrotik-certbot
     volumes:
       - ./nginx/ssl:/etc/letsencrypt
       - certbot_www:/var/www/certbot
-    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    entrypoint: ["/bin/sh", "-c", "trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;"]
     networks:
       - mikrotik-vpn-net
 
@@ -5936,17 +5936,6 @@ initialize_openvpn() {
     # Start OpenVPN container
     cd "$SYSTEM_DIR" || exit 1
     
-    # Fix certbot entrypoint in docker-compose.yml before starting
-    if [[ -f "docker-compose.yml" ]]; then
-        # Backup original
-        cp docker-compose.yml docker-compose.yml.bak
-        
-        # Fix certbot entrypoint - escape the ${!}
-        sed -i 's/wait ${!}/wait $${!}/g' docker-compose.yml
-        
-        log "Fixed docker-compose.yml certbot entrypoint"
-    fi
-    
     # Export environment variables for docker compose
     export VPN_NETWORK
     export DOMAIN_NAME
@@ -6014,17 +6003,6 @@ start_all_services() {
                 return 1
             fi
         fi
-    fi
-    
-    # Fix docker-compose.yml before starting
-    if [[ -f "docker-compose.yml" ]]; then
-        # Backup original
-        cp docker-compose.yml docker-compose.yml.bak
-        
-        # Fix certbot entrypoint
-        sed -i 's/wait ${!}/wait $${!}/g' docker-compose.yml
-        
-        log "Fixed docker-compose.yml"
     fi
     
     # Export all environment variables
