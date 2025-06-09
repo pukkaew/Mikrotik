@@ -481,6 +481,8 @@ phase2_system_preparation() {
 
 # Apply system optimizations
 apply_system_optimizations() {
+    log "Applying system optimizations..."
+    
     # System limits
     cat << 'EOF' > /etc/security/limits.d/99-mikrotik-vpn.conf
 # MikroTik VPN System Limits
@@ -498,15 +500,16 @@ mikrotik-vpn soft nproc 32768
 mikrotik-vpn hard nproc 32768
 EOF
 
-    # Load required kernel modules
-    log "Loading kernel modules..."
-    modprobe nf_conntrack
-    modprobe nf_conntrack_ipv4
-    modprobe nf_conntrack_ipv6
+    # Try to load kernel modules (don't fail if not available)
+    log "Checking kernel modules..."
+    for module in nf_conntrack nf_conntrack_ipv4 nf_conntrack_ipv6; do
+        modprobe $module 2>/dev/null || log_warning "Module $module not available"
+    done
     
-    # Add modules to load at boot
-    cat << 'EOF' > /etc/modules-load.d/mikrotik-vpn.conf
-# Modules required for MikroTik VPN
+    # Add modules to load at boot (if available)
+    if [[ -d /etc/modules-load.d ]]; then
+        cat << 'EOF' > /etc/modules-load.d/mikrotik-vpn.conf
+# Modules required for MikroTik VPN (load if available)
 nf_conntrack
 nf_conntrack_ipv4
 nf_conntrack_ipv6
@@ -514,30 +517,26 @@ ip_tables
 iptable_nat
 iptable_filter
 EOF
+    fi
 
-    # Kernel parameters - split into sections to handle errors
+    # Kernel parameters - only apply what's available
     log "Applying kernel parameters..."
     
-    # Basic network performance
-    cat << 'EOF' > /etc/sysctl.d/99-mikrotik-vpn-network.conf
+    # Create main sysctl config
+    cat << 'EOF' > /etc/sysctl.d/99-mikrotik-vpn.conf
 # Network Performance Tuning
 net.core.rmem_max = 134217728
 net.core.wmem_max = 134217728
 net.ipv4.tcp_rmem = 4096 87380 134217728
 net.ipv4.tcp_wmem = 4096 65536 134217728
 net.core.netdev_max_backlog = 5000
-net.ipv4.tcp_congestion_control = bbr
-net.core.default_qdisc = fq
 
 # VPN Settings
 net.ipv4.ip_forward = 1
 net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.conf.all.send_redirects = 0
 net.ipv6.conf.all.forwarding = 1
-EOF
 
-    # Security settings
-    cat << 'EOF' > /etc/sysctl.d/99-mikrotik-vpn-security.conf
 # Security Hardening
 net.ipv4.conf.all.rp_filter = 1
 net.ipv4.conf.default.rp_filter = 1
@@ -552,24 +551,40 @@ net.ipv4.tcp_synack_retries = 2
 net.ipv4.tcp_syn_retries = 5
 EOF
 
-    # Connection tracking (only if module is loaded)
-    if lsmod | grep -q nf_conntrack; then
+    # Check for BBR support
+    if modprobe tcp_bbr 2>/dev/null; then
+        echo "net.ipv4.tcp_congestion_control = bbr" >> /etc/sysctl.d/99-mikrotik-vpn.conf
+        echo "net.core.default_qdisc = fq" >> /etc/sysctl.d/99-mikrotik-vpn.conf
+    else
+        log_warning "BBR not available, using default congestion control"
+    fi
+
+    # Apply main sysctl settings
+    sysctl -p /etc/sysctl.d/99-mikrotik-vpn.conf 2>/dev/null || {
+        log_warning "Some sysctl settings could not be applied"
+        # Apply only essential settings
+        sysctl -w net.ipv4.ip_forward=1 2>/dev/null || true
+        sysctl -w net.ipv6.conf.all.forwarding=1 2>/dev/null || true
+    }
+
+    # Try to apply connection tracking settings if module is loaded
+    if lsmod | grep -q nf_conntrack 2>/dev/null; then
+        log "Applying connection tracking settings..."
         cat << 'EOF' > /etc/sysctl.d/99-mikrotik-vpn-conntrack.conf
-# Connection Tracking
+# Connection Tracking (optional)
 net.netfilter.nf_conntrack_max = 524288
 net.netfilter.nf_conntrack_tcp_timeout_established = 7200
 net.netfilter.nf_conntrack_tcp_timeout_time_wait = 120
 net.netfilter.nf_conntrack_tcp_timeout_close_wait = 60
 net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 120
 EOF
-        sysctl -p /etc/sysctl.d/99-mikrotik-vpn-conntrack.conf 2>/dev/null || true
+        sysctl -p /etc/sysctl.d/99-mikrotik-vpn-conntrack.conf 2>/dev/null || \
+            log_warning "Connection tracking settings not applied (not critical)"
     else
-        log_warning "Connection tracking module not loaded, skipping conntrack settings"
+        log_info "Connection tracking not available - skipping (system will work normally)"
     fi
-
-    # Apply sysctl settings
-    sysctl -p /etc/sysctl.d/99-mikrotik-vpn-network.conf
-    sysctl -p /etc/sysctl.d/99-mikrotik-vpn-security.conf
+    
+    log "System optimizations applied (some settings may be skipped based on system capabilities)"
 }
 
 # =============================================================================
