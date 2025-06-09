@@ -512,8 +512,7 @@ phase2_system_preparation() {
         whois \
         dirmngr \
         gpg-agent \
-        iptables \
-        iptables-persistent
+        iptables
     
     # Create system user
     log "Creating system user..."
