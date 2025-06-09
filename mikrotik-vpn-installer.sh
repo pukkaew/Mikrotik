@@ -4254,13 +4254,13 @@ services:
   # ===========================================
   # SSL Certificate Management
   # ===========================================
-  certbot:
+ certbot:
     image: certbot/certbot
     container_name: mikrotik-certbot
     volumes:
       - ./nginx/ssl:/etc/letsencrypt
       - certbot_www:/var/www/certbot
-    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait ${!}; done;'"
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
     networks:
       - mikrotik-vpn-net
 
@@ -5942,7 +5942,7 @@ initialize_openvpn() {
         cp docker-compose.yml docker-compose.yml.bak
         
         # Fix certbot entrypoint - escape the ${!}
-        sed -i 's/wait ${!}/wait ${!}/g' docker-compose.yml
+        sed -i 's/wait ${!}/wait $${!}/g' docker-compose.yml
         
         log "Fixed docker-compose.yml certbot entrypoint"
     fi
@@ -6022,7 +6022,7 @@ start_all_services() {
         cp docker-compose.yml docker-compose.yml.bak
         
         # Fix certbot entrypoint
-        sed -i 's/wait ${!}/wait ${!}/g' docker-compose.yml
+        sed -i 's/wait ${!}/wait $${!}/g' docker-compose.yml
         
         log "Fixed docker-compose.yml"
     fi
