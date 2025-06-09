@@ -5909,6 +5909,13 @@ set_final_permissions() {
 initialize_openvpn() {
     log "Initializing OpenVPN PKI..."
     
+    # Check if Docker is running first
+    if ! docker ps &>/dev/null; then
+        log_warning "Docker is not running, skipping OpenVPN initialization"
+        log_warning "You can initialize OpenVPN later using: docker exec mikrotik-openvpn /etc/openvpn/init-pki.sh"
+        return 0
+    fi
+    
     # Start OpenVPN container
     cd "$SYSTEM_DIR" || exit 1
     docker compose up -d openvpn
@@ -5916,10 +5923,13 @@ initialize_openvpn() {
     
     # Initialize PKI if needed
     if ! docker exec mikrotik-openvpn test -f /etc/openvpn/easy-rsa/pki/ca.crt 2>/dev/null; then
-        docker exec mikrotik-openvpn /etc/openvpn/init-pki.sh
+        docker exec mikrotik-openvpn /etc/openvpn/init-pki.sh || {
+            log_warning "OpenVPN PKI initialization failed"
+            log_warning "You can retry later using: docker exec mikrotik-openvpn /etc/openvpn/init-pki.sh"
+        }
+    else
+        log "OpenVPN PKI already initialized"
     fi
-    
-    log "OpenVPN PKI initialized"
 }
 
 # Start all services
