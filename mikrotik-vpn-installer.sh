@@ -5772,6 +5772,15 @@ phase10_final_setup() {
     log "PHASE 10: FINAL SETUP AND VERIFICATION"
     log "==================================================================="
     
+    # Load configuration first
+    if [[ -f "$CONFIG_DIR/setup.env" ]]; then
+        source "$CONFIG_DIR/setup.env"
+        log "Configuration loaded successfully"
+    else
+        log_error "Configuration file not found at $CONFIG_DIR/setup.env"
+        exit 1
+    fi
+    
     # Create systemd service
     create_systemd_service
     
@@ -5909,6 +5918,14 @@ set_final_permissions() {
 initialize_openvpn() {
     log "Initializing OpenVPN PKI..."
     
+    # Load configuration first
+    if [[ -f "$CONFIG_DIR/setup.env" ]]; then
+        source "$CONFIG_DIR/setup.env"
+    else
+        log_error "Configuration file not found!"
+        return 1
+    fi
+    
     # Check if Docker is running first
     if ! docker ps &>/dev/null; then
         log_warning "Docker is not running, skipping OpenVPN initialization"
@@ -5918,6 +5935,34 @@ initialize_openvpn() {
     
     # Start OpenVPN container
     cd "$SYSTEM_DIR" || exit 1
+    
+    # Fix certbot entrypoint in docker-compose.yml before starting
+    if [[ -f "docker-compose.yml" ]]; then
+        # Backup original
+        cp docker-compose.yml docker-compose.yml.bak
+        
+        # Fix certbot entrypoint - escape the ${!}
+        sed -i 's/wait ${!}/wait ${!}/g' docker-compose.yml
+        
+        log "Fixed docker-compose.yml certbot entrypoint"
+    fi
+    
+    # Export environment variables for docker compose
+    export VPN_NETWORK
+    export DOMAIN_NAME
+    export ADMIN_EMAIL
+    export MONGO_ROOT_PASSWORD
+    export MONGO_APP_PASSWORD
+    export REDIS_PASSWORD
+    export L2TP_PSK
+    export GRAFANA_PASSWORD
+    export JWT_SECRET
+    export SESSION_SECRET
+    export API_KEY
+    export MONGODB_CACHE_SIZE
+    export REDIS_MAX_MEM
+    
+    # Now start OpenVPN container
     docker compose up -d openvpn
     sleep 10
     
@@ -5935,6 +5980,14 @@ initialize_openvpn() {
 # Start all services
 start_all_services() {
     log "Starting all services..."
+    
+    # Load configuration first
+    if [[ -f "$CONFIG_DIR/setup.env" ]]; then
+        source "$CONFIG_DIR/setup.env"
+    else
+        log_error "Configuration file not found!"
+        return 1
+    fi
     
     cd "$SYSTEM_DIR" || exit 1
     
@@ -5962,6 +6015,32 @@ start_all_services() {
             fi
         fi
     fi
+    
+    # Fix docker-compose.yml before starting
+    if [[ -f "docker-compose.yml" ]]; then
+        # Backup original
+        cp docker-compose.yml docker-compose.yml.bak
+        
+        # Fix certbot entrypoint
+        sed -i 's/wait ${!}/wait ${!}/g' docker-compose.yml
+        
+        log "Fixed docker-compose.yml"
+    fi
+    
+    # Export all environment variables
+    export VPN_NETWORK
+    export DOMAIN_NAME
+    export ADMIN_EMAIL
+    export MONGO_ROOT_PASSWORD
+    export MONGO_APP_PASSWORD
+    export REDIS_PASSWORD
+    export L2TP_PSK
+    export GRAFANA_PASSWORD
+    export JWT_SECRET
+    export SESSION_SECRET
+    export API_KEY
+    export MONGODB_CACHE_SIZE
+    export REDIS_MAX_MEM
     
     # Start services in order
     log "Starting MongoDB and Redis..."
