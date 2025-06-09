@@ -5882,10 +5882,25 @@ set_final_permissions() {
     # Set permissions
     chmod -R 755 "$SYSTEM_DIR"
     chmod 700 "$CONFIG_DIR"
-    chmod 600 "$CONFIG_DIR"/*
-    chmod 700 "$SYSTEM_DIR/ssl"
-    chmod 600 "$SYSTEM_DIR/ssl"/*
-    chmod 755 "$SCRIPT_DIR"/*.sh
+    
+    # Handle config files if they exist
+    if [[ -d "$CONFIG_DIR" ]] && [[ -n "$(ls -A "$CONFIG_DIR" 2>/dev/null)" ]]; then
+        chmod 600 "$CONFIG_DIR"/* 2>/dev/null || true
+    fi
+    
+    # Handle SSL directory
+    if [[ -d "$SYSTEM_DIR/ssl" ]]; then
+        chmod 700 "$SYSTEM_DIR/ssl"
+        # Handle SSL files if they exist
+        if [[ -n "$(ls -A "$SYSTEM_DIR/ssl" 2>/dev/null)" ]]; then
+            chmod 600 "$SYSTEM_DIR/ssl"/* 2>/dev/null || true
+        fi
+    fi
+    
+    # Handle script directory
+    if [[ -d "$SCRIPT_DIR" ]] && [[ -n "$(ls -A "$SCRIPT_DIR"/*.sh 2>/dev/null)" ]]; then
+        chmod 755 "$SCRIPT_DIR"/*.sh 2>/dev/null || true
+    fi
     
     log "Permissions set successfully"
 }
@@ -5916,13 +5931,38 @@ start_all_services() {
     # Create network
     create_docker_network
     
+    # Check if Docker is running
+    if ! docker ps &>/dev/null; then
+        log_warning "Docker is not running, attempting to start..."
+        
+        # Try to start Docker
+        if systemctl is-system-running &>/dev/null; then
+            systemctl start docker || {
+                log_error "Failed to start Docker with systemctl"
+                return 1
+            }
+        else
+            # Try manual start
+            dockerd > /var/log/docker-manual.log 2>&1 &
+            sleep 10
+            
+            if ! docker ps &>/dev/null; then
+                log_error "Failed to start Docker manually"
+                return 1
+            fi
+        fi
+    fi
+    
     # Start services in order
+    log "Starting MongoDB and Redis..."
     docker compose up -d mongodb redis
     sleep 15
     
+    log "Starting application..."
     docker compose up -d app
     sleep 10
     
+    log "Starting all remaining services..."
     docker compose up -d
     
     # Wait for services to be ready
