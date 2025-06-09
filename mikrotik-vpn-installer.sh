@@ -97,7 +97,7 @@ check_root() {
 fix_docker_service() {
     log "Fixing Docker service issues..."
     
-    # Stop Docker if running
+    # Stop Docker and related services
     systemctl stop docker 2>/dev/null || true
     systemctl stop docker.socket 2>/dev/null || true
     systemctl stop containerd 2>/dev/null || true
@@ -108,36 +108,124 @@ fix_docker_service() {
     # Remove Docker lock files if they exist
     rm -f /var/run/docker.pid 2>/dev/null || true
     rm -f /var/run/docker.sock 2>/dev/null || true
+    rm -f /var/run/docker/containerd/containerd.pid 2>/dev/null || true
     
     # Ensure Docker directories exist with correct permissions
     mkdir -p /etc/docker
     mkdir -p /var/lib/docker
     
+    # Check for storage driver issues
+    if [[ -d /var/lib/docker/overlay2 ]]; then
+        log "Cleaning up overlay2 storage..."
+        systemctl stop docker 2>/dev/null || true
+        rm -rf /var/lib/docker/overlay2/* 2>/dev/null || true
+    fi
+    
     # Fix iptables issues that might prevent Docker from starting
     log "Checking iptables modules..."
     
     # Load required kernel modules
-    for module in ip_tables iptable_filter iptable_nat nf_nat nf_conntrack; do
+    for module in ip_tables iptable_filter iptable_nat nf_nat nf_conntrack br_netfilter; do
         if ! lsmod | grep -q "^$module"; then
             log_info "Loading kernel module: $module"
             modprobe $module 2>/dev/null || log_warning "Could not load module $module (may not be needed)"
         fi
     done
     
+    # Enable IPv4 forwarding
+    echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+    
     # Update alternatives for iptables (use legacy if needed)
     if command -v update-alternatives &> /dev/null; then
         log "Setting up iptables alternatives..."
-        update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null || true
-        update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
+        # Check if iptables-legacy exists
+        if [[ -f /usr/sbin/iptables-legacy ]]; then
+            update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null || true
+            update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
+        fi
     fi
     
     # Clean up any Docker bridge issues
     ip link delete docker0 2>/dev/null || true
     
+    # Check and fix containerd
+    if command -v containerd &> /dev/null; then
+        log "Restarting containerd..."
+        systemctl restart containerd || {
+            log_warning "Containerd restart failed, reinstalling..."
+            apt-get install --reinstall -y containerd.io
+        }
+    fi
+    
+    # Create default Docker daemon configuration if missing
+    if [[ ! -f /etc/docker/daemon.json ]]; then
+        log "Creating default Docker daemon configuration..."
+        cat << 'EOF' > /etc/docker/daemon.json
+{
+  "storage-driver": "overlay2",
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+EOF
+    fi
+    
     # Ensure systemd knows about the changes
     systemctl daemon-reload
     
     sleep 2
+}
+
+# Diagnose Docker issues
+diagnose_docker_issues() {
+    log "Diagnosing Docker issues..."
+    
+    # Check if Docker is installed
+    if ! command -v docker &> /dev/null; then
+        log_error "Docker is not installed"
+        return 1
+    fi
+    
+    # Check systemd service file
+    if [[ ! -f /lib/systemd/system/docker.service ]]; then
+        log_error "Docker service file is missing"
+        return 1
+    fi
+    
+    # Check for common error patterns in journal
+    local docker_errors=$(journalctl -u docker.service --no-pager -n 50 2>/dev/null)
+    
+    if echo "$docker_errors" | grep -q "failed to start daemon"; then
+        log_error "Docker daemon failed to start"
+        
+        # Check for storage driver issues
+        if echo "$docker_errors" | grep -q "storage-driver"; then
+            log_warning "Storage driver issue detected"
+            rm -rf /var/lib/docker/* 2>/dev/null || true
+        fi
+        
+        # Check for network issues
+        if echo "$docker_errors" | grep -q "bridge"; then
+            log_warning "Network bridge issue detected"
+            ip link delete docker0 2>/dev/null || true
+        fi
+    fi
+    
+    # Check for socket issues
+    if echo "$docker_errors" | grep -q "docker.sock"; then
+        log_warning "Docker socket issue detected"
+        rm -f /var/run/docker.sock 2>/dev/null || true
+    fi
+    
+    # Check for containerd issues
+    if echo "$docker_errors" | grep -q "containerd"; then
+        log_warning "Containerd issue detected"
+        systemctl restart containerd 2>/dev/null || true
+    fi
+    
+    return 0
 }
 
 # Create or check docker network
@@ -742,11 +830,66 @@ EOF
         else
             log_warning "Docker failed to start, attempting to fix..."
             
+            # Diagnose issues first
+            diagnose_docker_issues
+            
             # Get detailed error information
             journalctl -xeu docker.service --no-pager | tail -20 >> "$LOG_FILE"
             
             # Try to fix common issues
             fix_docker_service
+            
+            # For last attempt, try complete reinstall
+            if [[ $attempt -eq $max_attempts ]]; then
+                log_warning "Attempting complete Docker reinstall..."
+                
+                # Stop everything
+                systemctl stop docker docker.socket containerd 2>/dev/null || true
+                
+                # Remove and reinstall
+                apt-get remove -y docker-ce docker-ce-cli containerd.io 2>/dev/null || true
+                apt-get autoremove -y
+                rm -rf /var/lib/docker /var/lib/containerd
+                
+                # Reinstall
+                apt-get update
+                DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                    docker-ce \
+                    docker-ce-cli \
+                    containerd.io \
+                    docker-buildx-plugin \
+                    docker-compose-plugin
+                
+                # Recreate daemon.json
+                cat << 'EOF' > /etc/docker/daemon.json
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m",
+    "max-file": "5"
+  },
+  "storage-driver": "overlay2",
+  "storage-opts": [
+    "overlay2.override_kernel_check=true"
+  ],
+  "default-ulimits": {
+    "nofile": {
+      "Name": "nofile",
+      "Hard": 64000,
+      "Soft": 64000
+    }
+  },
+  "live-restore": true,
+  "userland-proxy": false,
+  "ip-forward": true,
+  "iptables": true,
+  "ipv6": false,
+  "exec-opts": ["native.cgroupdriver=systemd"]
+}
+EOF
+                
+                systemctl daemon-reload
+            fi
             
             # Wait before retry
             sleep 5
@@ -758,6 +901,18 @@ EOF
     if [[ $attempt -gt $max_attempts ]]; then
         log_error "Failed to start Docker after $max_attempts attempts"
         log_error "Please check: journalctl -xeu docker.service"
+        
+        # Show last 50 lines of Docker logs for debugging
+        echo "=== Docker Service Logs ===" >> "$LOG_FILE"
+        journalctl -xeu docker.service --no-pager -n 50 >> "$LOG_FILE"
+        
+        # Try manual diagnostic
+        log_error "Manual intervention may be required. Common solutions:"
+        log_error "1. Reboot the system: sudo reboot"
+        log_error "2. Check disk space: df -h"
+        log_error "3. Check if virtualization is enabled in BIOS"
+        log_error "4. Try: sudo dockerd --debug"
+        
         exit 1
     fi
     
