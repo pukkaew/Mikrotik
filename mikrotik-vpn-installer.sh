@@ -5566,6 +5566,15 @@ EOF
 harden_ssh() {
     log "Hardening SSH configuration..."
     
+    # Create required directories
+    mkdir -p /run/sshd
+    chmod 755 /run/sshd
+    
+    # Backup original SSH config
+    if [[ ! -f /etc/ssh/sshd_config.backup ]]; then
+        cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
+    fi
+    
     # Create SSH config
     cat << EOF > /etc/ssh/sshd_config.d/99-mikrotik-vpn-hardening.conf
 # MikroTik VPN SSH Hardening
@@ -5615,13 +5624,19 @@ KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp521,
 EOF
 
     # Test configuration
-    sshd -t
-    
-    if [[ $? -eq 0 ]]; then
-        systemctl restart sshd
-        log "SSH hardening completed successfully"
+    if sshd -t; then
+        # Only restart SSH if systemctl is working
+        if systemctl is-system-running &>/dev/null; then
+            systemctl restart sshd
+            log "SSH hardening completed successfully"
+        else
+            log_warning "SSH configuration updated but service not restarted (systemctl not available)"
+            log "SSH hardening configuration saved"
+        fi
     else
-        log_error "SSH configuration test failed"
+        log_error "SSH configuration test failed, reverting changes..."
+        rm -f /etc/ssh/sshd_config.d/99-mikrotik-vpn-hardening.conf
+        return 1
     fi
 }
 
@@ -5630,21 +5645,56 @@ setup_intrusion_detection() {
     log "Setting up intrusion detection..."
     
     # Initialize AIDE
-    if [[ ! -f "/var/lib/aide/aide.db" ]]; then
-        log "Initializing AIDE database..."
-        aideinit -y -f
-        cp /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+    if command -v aide &> /dev/null; then
+        if [[ ! -f "/var/lib/aide/aide.db" ]]; then
+            log "Initializing AIDE database..."
+            # Create aide config directory if not exists
+            mkdir -p /var/lib/aide
+            
+            # Initialize AIDE
+            if command -v aideinit &> /dev/null; then
+                aideinit -y -f || {
+                    log_warning "AIDE initialization failed, trying alternative method..."
+                    aide --init || log_warning "AIDE initialization failed"
+                }
+                
+                # Copy database if created
+                if [[ -f /var/lib/aide/aide.db.new ]]; then
+                    cp /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+                fi
+            else
+                log_warning "aideinit not found, using aide --init"
+                aide --init || log_warning "AIDE initialization failed"
+            fi
+        else
+            log "AIDE database already exists"
+        fi
+    else
+        log_warning "AIDE not installed, skipping"
     fi
     
     # Configure ClamAV
-    systemctl stop clamav-freshclam
-    freshclam
-    systemctl start clamav-freshclam
-    systemctl enable clamav-daemon
+    if command -v clamscan &> /dev/null; then
+        if systemctl is-system-running &>/dev/null; then
+            systemctl stop clamav-freshclam 2>/dev/null || true
+            freshclam || log_warning "ClamAV database update failed"
+            systemctl start clamav-freshclam 2>/dev/null || true
+            systemctl enable clamav-daemon 2>/dev/null || true
+        else
+            log_warning "Cannot manage ClamAV services without systemctl"
+            freshclam || log_warning "ClamAV database update failed"
+        fi
+    else
+        log_warning "ClamAV not installed, skipping"
+    fi
     
     # Update rkhunter
-    rkhunter --update
-    rkhunter --propupd
+    if command -v rkhunter &> /dev/null; then
+        rkhunter --update || log_warning "rkhunter update failed"
+        rkhunter --propupd || log_warning "rkhunter property update failed"
+    else
+        log_warning "rkhunter not installed, skipping"
+    fi
     
     log "Intrusion detection setup completed"
 }
@@ -5733,7 +5783,8 @@ phase10_final_setup() {
 
 # Create systemd service
 create_systemd_service() {
-    cat << EOF > /etc/systemd/system/mikrotik-vpn.service
+    if systemctl is-system-running &>/dev/null; then
+        cat << EOF > /etc/systemd/system/mikrotik-vpn.service
 [Unit]
 Description=MikroTik VPN Management System
 After=docker.service network-online.target
@@ -5756,10 +5807,58 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-    systemctl daemon-reload
-    systemctl enable mikrotik-vpn.service
-    
-    log "Systemd service created and enabled"
+        systemctl daemon-reload
+        systemctl enable mikrotik-vpn.service
+        
+        log "Systemd service created and enabled"
+    else
+        log_warning "systemd not available, creating init script instead..."
+        
+        # Create a simple init script for non-systemd systems
+        cat << 'EOF' > /etc/init.d/mikrotik-vpn
+#!/bin/bash
+### BEGIN INIT INFO
+# Provides:          mikrotik-vpn
+# Required-Start:    $docker $network
+# Required-Stop:     $docker $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: MikroTik VPN Management System
+### END INIT INFO
+
+case "$1" in
+    start)
+        echo "Starting MikroTik VPN Management System..."
+        /opt/mikrotik-vpn/scripts/start-services.sh
+        ;;
+    stop)
+        echo "Stopping MikroTik VPN Management System..."
+        /opt/mikrotik-vpn/scripts/stop-services.sh
+        ;;
+    restart)
+        $0 stop
+        $0 start
+        ;;
+    status)
+        /opt/mikrotik-vpn/scripts/health-check.sh
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
+EOF
+        
+        chmod +x /etc/init.d/mikrotik-vpn
+        
+        # Try to enable with update-rc.d if available
+        if command -v update-rc.d &> /dev/null; then
+            update-rc.d mikrotik-vpn defaults
+            log "Init script created and enabled"
+        else
+            log "Init script created at /etc/init.d/mikrotik-vpn"
+        fi
+    fi
 }
 
 # Set final permissions
