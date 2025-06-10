@@ -4005,8 +4005,8 @@ services:
     container_name: mikrotik-nginx
     restart: unless-stopped
     ports:
-      - "8080:80"
-      - "8443:443"
+      - "9080:80"
+      - "9443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
@@ -4644,10 +4644,10 @@ help_menu() {
     echo "  Admin Email: $ADMIN_EMAIL"
     echo
     echo "Access URLs:"
-    echo "  Main: https://${DOMAIN_NAME}:8443"
-    echo "  Admin: https://admin.${DOMAIN_NAME}:8443"
-    echo "  Monitor: https://monitor.${DOMAIN_NAME}:8443"
-    echo "  API Docs: https://${DOMAIN_NAME}:8443/api-docs"
+    echo "  Main: https://${DOMAIN_NAME}:9443"
+    echo "  Admin: https://admin.${DOMAIN_NAME}:9443"
+    echo "  Monitor: https://monitor.${DOMAIN_NAME}:9443"
+    echo "  API Docs: https://${DOMAIN_NAME}:9443/api-docs"
     echo
     echo "Configuration Files:"
     echo "  Main: $CONFIG_DIR/setup.env"
@@ -5463,8 +5463,8 @@ setup_firewall() {
     ufw allow "$SSH_PORT/tcp" comment 'SSH'
     
     # Allow web traffic
-    ufw allow 8080/tcp comment 'HTTP'
-    ufw allow 8443/tcp comment 'HTTPS'
+    ufw allow 9080/tcp comment 'HTTP'
+    ufw allow 9443/tcp comment 'HTTPS'
     
     # Allow VPN
     ufw allow 1194/udp comment 'OpenVPN'
@@ -6073,10 +6073,10 @@ ACCESS INFORMATION
 ═══════════════════════════════════════════════════════════════════════════════
 
 Web Interfaces:
-  Main Application:     https://${DOMAIN_NAME}:8443
-  Admin Panel:          https://admin.${DOMAIN_NAME}:8443
-  Monitoring:           https://monitor.${DOMAIN_NAME}:8443
-  API Documentation:    https://${DOMAIN_NAME}:8443/api-docs
+  Main Application:     https://${DOMAIN_NAME}:9443
+  Admin Panel:          https://admin.${DOMAIN_NAME}:9443
+  Monitoring:           https://monitor.${DOMAIN_NAME}:9443
+  API Documentation:    https://${DOMAIN_NAME}:9443/api-docs
 
 Management Tools:
   Mongo Express:        http://localhost:8081 (admin / $MONGO_ROOT_PASSWORD)
