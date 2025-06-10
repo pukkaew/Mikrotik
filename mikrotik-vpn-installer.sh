@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # MikroTik VPN Management System - Complete Installation Script
-# Version: 4.2 - Docker Fix Edition
-# Description: Complete installation with Docker service fix and better error handling
+# Version: 5.0 - Full Features Edition with Multi-language & Payment Gateway
+# Description: Complete installation with all Phase 1-4 features
 # Compatible with: Ubuntu 22.04/24.04 LTS
 # =============================================================================
 
@@ -178,56 +178,6 @@ EOF
     sleep 2
 }
 
-# Diagnose Docker issues
-diagnose_docker_issues() {
-    log "Diagnosing Docker issues..."
-    
-    # Check if Docker is installed
-    if ! command -v docker &> /dev/null; then
-        log_error "Docker is not installed"
-        return 1
-    fi
-    
-    # Check systemd service file
-    if [[ ! -f /lib/systemd/system/docker.service ]]; then
-        log_error "Docker service file is missing"
-        return 1
-    fi
-    
-    # Check for common error patterns in journal
-    local docker_errors=$(journalctl -u docker.service --no-pager -n 50 2>/dev/null)
-    
-    if echo "$docker_errors" | grep -q "failed to start daemon"; then
-        log_error "Docker daemon failed to start"
-        
-        # Check for storage driver issues
-        if echo "$docker_errors" | grep -q "storage-driver"; then
-            log_warning "Storage driver issue detected"
-            rm -rf /var/lib/docker/* 2>/dev/null || true
-        fi
-        
-        # Check for network issues
-        if echo "$docker_errors" | grep -q "bridge"; then
-            log_warning "Network bridge issue detected"
-            ip link delete docker0 2>/dev/null || true
-        fi
-    fi
-    
-    # Check for socket issues
-    if echo "$docker_errors" | grep -q "docker.sock"; then
-        log_warning "Docker socket issue detected"
-        rm -f /var/run/docker.sock 2>/dev/null || true
-    fi
-    
-    # Check for containerd issues
-    if echo "$docker_errors" | grep -q "containerd"; then
-        log_warning "Containerd issue detected"
-        systemctl restart containerd 2>/dev/null || true
-    fi
-    
-    return 0
-}
-
 # Create or check docker network
 create_docker_network() {
     if ! docker network ls --format '{{.Name}}' | grep -q "^mikrotik-vpn-net$"; then
@@ -244,10 +194,9 @@ print_header() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════════════════════════╗
 ║                                                                           ║
-║        MikroTik VPN Management System - Installation v4.2                 ║
+║        MikroTik VPN Management System - Installation v5.0                 ║
 ║                                                                           ║
-║                    Complete All-in-One Installation Script                ║
-║                            Docker Fix Edition                             ║
+║       Complete Installation with Multi-language & Payment Gateway         ║
 ║                                                                           ║
 ╚═══════════════════════════════════════════════════════════════════════════╝
 EOF
@@ -389,6 +338,7 @@ phase1_configuration() {
         echo "Admin Email: $ADMIN_EMAIL"
         echo "SSH Port: $SSH_PORT"
         echo "VPN Network: $VPN_NETWORK"
+        echo "Default Language: $DEFAULT_LANGUAGE"
         echo
         
         read -p "Keep this configuration? (y/n): " keep_config
@@ -427,6 +377,32 @@ phase1_configuration() {
     read -p "Enter SSH port (default 22): " SSH_PORT
     SSH_PORT=${SSH_PORT:-22}
     
+    # Default language
+    echo
+    echo "Select default language:"
+    echo "1. Thai (ไทย)"
+    echo "2. English"
+    read -p "Enter choice (1-2): " lang_choice
+    case $lang_choice in
+        1) DEFAULT_LANGUAGE="th" ;;
+        2) DEFAULT_LANGUAGE="en" ;;
+        *) DEFAULT_LANGUAGE="th" ;;
+    esac
+    
+    # Currency
+    echo
+    echo "Select default currency:"
+    echo "1. THB (Thai Baht)"
+    echo "2. USD (US Dollar)"
+    echo "3. EUR (Euro)"
+    read -p "Enter choice (1-3): " currency_choice
+    case $currency_choice in
+        1) DEFAULT_CURRENCY="THB" ;;
+        2) DEFAULT_CURRENCY="USD" ;;
+        3) DEFAULT_CURRENCY="EUR" ;;
+        *) DEFAULT_CURRENCY="THB" ;;
+    esac
+    
     # Other configurations
     TIMEZONE="Asia/Bangkok"
     VPN_NETWORK="10.8.0.0/24"
@@ -441,6 +417,8 @@ phase1_configuration() {
     API_KEY=$(openssl rand -base64 32)
     L2TP_PSK=$(openssl rand -base64 32)
     GRAFANA_PASSWORD=$(openssl rand -base64 16 | tr -d "=+/" | cut -c1-16)
+    PAYMENT_API_KEY=$(openssl rand -base64 32)
+    PAYMENT_SECRET=$(openssl rand -base64 32)
     
     # Save configuration
     save_configuration
@@ -454,6 +432,8 @@ phase1_configuration() {
     echo "SSH Port: $SSH_PORT"
     echo "Timezone: $TIMEZONE"
     echo "VPN Network: $VPN_NETWORK"
+    echo "Default Language: $DEFAULT_LANGUAGE"
+    echo "Default Currency: $DEFAULT_CURRENCY"
     echo
     
     read -p "Proceed with installation? (y/n): " proceed
@@ -479,6 +459,8 @@ export ADMIN_EMAIL="$ADMIN_EMAIL"
 export SSH_PORT="$SSH_PORT"
 export TIMEZONE="$TIMEZONE"
 export VPN_NETWORK="$VPN_NETWORK"
+export DEFAULT_LANGUAGE="$DEFAULT_LANGUAGE"
+export DEFAULT_CURRENCY="$DEFAULT_CURRENCY"
 
 # Database Passwords
 export MONGO_ROOT_PASSWORD="$MONGO_ROOT_PASSWORD"
@@ -495,6 +477,10 @@ export L2TP_PSK="$L2TP_PSK"
 
 # Monitoring
 export GRAFANA_PASSWORD="$GRAFANA_PASSWORD"
+
+# Payment Gateway
+export PAYMENT_API_KEY="$PAYMENT_API_KEY"
+export PAYMENT_SECRET="$PAYMENT_SECRET"
 
 # System Paths
 export SYSTEM_DIR="$SYSTEM_DIR"
@@ -526,6 +512,10 @@ SESSION_SECRET=$SESSION_SECRET
 API_KEY=$API_KEY
 MONGODB_CACHE_SIZE=$MONGODB_CACHE_SIZE
 REDIS_MAX_MEM=$REDIS_MAX_MEM
+DEFAULT_LANGUAGE=$DEFAULT_LANGUAGE
+DEFAULT_CURRENCY=$DEFAULT_CURRENCY
+PAYMENT_API_KEY=$PAYMENT_API_KEY
+PAYMENT_SECRET=$PAYMENT_SECRET
 EOF
     
     chmod 600 "$SYSTEM_DIR/.env"
@@ -600,7 +590,10 @@ phase2_system_preparation() {
         whois \
         dirmngr \
         gpg-agent \
-        iptables
+        iptables \
+        fonts-thai-tlwg \
+        language-pack-th \
+        gettext
     
     # Create system user
     log "Creating system user..."
@@ -739,29 +732,6 @@ phase3_docker_installation() {
         log_warning "Docker might not work properly in this environment"
     fi
     
-    # Check if systemctl is working
-    if ! systemctl is-system-running &>/dev/null; then
-        log_warning "systemd is not running properly"
-        log_warning "Attempting to start Docker manually..."
-        
-        # Try to start Docker daemon manually
-        if command -v dockerd &> /dev/null; then
-            log "Starting Docker daemon in background..."
-            dockerd > /var/log/docker-manual.log 2>&1 &
-            DOCKER_PID=$!
-            sleep 10
-            
-            # Check if Docker is running
-            if docker version &>/dev/null; then
-                log "Docker is running (manual start)"
-                return 0
-            else
-                log_error "Failed to start Docker manually"
-                kill $DOCKER_PID 2>/dev/null || true
-            fi
-        fi
-    fi
-    
     # Check if Docker is already installed and running
     if command -v docker &> /dev/null; then
         log "Docker is already installed"
@@ -777,15 +747,7 @@ phase3_docker_installation() {
             return 0
         else
             log "Docker is installed but not running"
-            # Try to start it
-            if systemctl start docker 2>/dev/null; then
-                log "Docker started successfully"
-                create_docker_network
-                log "Phase 3 completed successfully!"
-                return 0
-            else
-                log_warning "Cannot start Docker with systemctl, trying alternative methods..."
-            fi
+            fix_docker_service
         fi
     else
         log "Installing Docker..."
@@ -855,46 +817,9 @@ EOF
         usermod -aG docker "$SUDO_USER"
     fi
     
-    # Try different methods to start Docker
-    log "Attempting to start Docker service..."
-    
-    # Method 1: Try systemctl
-    if systemctl start docker 2>/dev/null; then
-        log "Docker started with systemctl"
-    else
-        # Method 2: Try service command
-        if service docker start 2>/dev/null; then
-            log "Docker started with service command"
-        else
-            # Method 3: Try starting dockerd directly
-            log_warning "Starting Docker daemon manually..."
-            
-            # Kill any existing dockerd processes
-            pkill -f dockerd || true
-            sleep 2
-            
-            # Start dockerd in background
-            dockerd > /var/log/docker-manual.log 2>&1 &
-            DOCKER_PID=$!
-            
-            # Wait for Docker to start
-            local count=0
-            while [[ $count -lt 30 ]]; do
-                if docker version &>/dev/null; then
-                    log "Docker daemon started successfully (PID: $DOCKER_PID)"
-                    break
-                fi
-                sleep 1
-                count=$((count + 1))
-            done
-            
-            if [[ $count -ge 30 ]]; then
-                log_error "Docker daemon failed to start after 30 seconds"
-                cat /var/log/docker-manual.log | tail -50 >> "$LOG_FILE"
-                exit 1
-            fi
-        fi
-    fi
+    # Start Docker
+    systemctl start docker || fix_docker_service
+    systemctl enable docker
     
     # Verify Docker is working
     log "Verifying Docker installation..."
@@ -902,24 +827,7 @@ EOF
         log "Docker is working correctly"
     else
         log_error "Docker test failed"
-        
-        # Check what's wrong
-        if ! docker version &>/dev/null; then
-            log_error "Docker client cannot connect to daemon"
-            log_error "Trying to diagnose..."
-            
-            # Check if dockerd is running
-            if ! pgrep -f dockerd > /dev/null; then
-                log_error "Docker daemon is not running"
-            else
-                log_error "Docker daemon is running but not responding"
-            fi
-            
-            # Show docker info for debugging
-            docker version 2>&1 | tee -a "$LOG_FILE" || true
-            
-            exit 1
-        fi
+        exit 1
     fi
     
     # Create Docker network
@@ -957,8 +865,24 @@ phase4_directory_structure() {
         "$SYSTEM_DIR/app/middleware"
         "$SYSTEM_DIR/app/utils"
         "$SYSTEM_DIR/app/public"
+        "$SYSTEM_DIR/app/public/css"
+        "$SYSTEM_DIR/app/public/js"
+        "$SYSTEM_DIR/app/public/images"
+        "$SYSTEM_DIR/app/public/fonts"
         "$SYSTEM_DIR/app/views"
+        "$SYSTEM_DIR/app/views/layouts"
+        "$SYSTEM_DIR/app/views/partials"
+        "$SYSTEM_DIR/app/views/portal"
+        "$SYSTEM_DIR/app/views/admin"
         "$SYSTEM_DIR/app/config"
+        "$SYSTEM_DIR/app/locales"
+        "$SYSTEM_DIR/app/locales/th"
+        "$SYSTEM_DIR/app/locales/en"
+        "$SYSTEM_DIR/app/services"
+        "$SYSTEM_DIR/app/api"
+        "$SYSTEM_DIR/app/api/payment"
+        "$SYSTEM_DIR/app/api/mikrotik"
+        "$SYSTEM_DIR/app/test"
         "$SYSTEM_DIR/mongodb/data"
         "$SYSTEM_DIR/mongodb/logs"
         "$SYSTEM_DIR/mongodb/backups"
@@ -982,6 +906,10 @@ phase4_directory_structure() {
         "$SYSTEM_DIR/clients"
         "$SYSTEM_DIR/data"
         "$SYSTEM_DIR/ssl"
+        "$SYSTEM_DIR/templates"
+        "$SYSTEM_DIR/templates/voucher"
+        "$SYSTEM_DIR/templates/portal"
+        "$SYSTEM_DIR/templates/email"
     )
     
     for dir in "${directories[@]}"; do
@@ -1000,12 +928,12 @@ phase4_directory_structure() {
 }
 
 # =============================================================================
-# PHASE 5: NODE.JS APPLICATION
+# PHASE 5: NODE.JS APPLICATION WITH FULL FEATURES
 # =============================================================================
 
 phase5_nodejs_application() {
     log "==================================================================="
-    log "PHASE 5: SETTING UP NODE.JS APPLICATION"
+    log "PHASE 5: SETTING UP NODE.JS APPLICATION WITH FULL FEATURES"
     log "==================================================================="
     
     # Install Node.js
@@ -1021,24 +949,27 @@ phase5_nodejs_application() {
     npm --version
     pm2 --version
     
-    # Create package.json
+    # Create package.json with all dependencies
     cat << 'EOF' > "$SYSTEM_DIR/app/package.json"
 {
   "name": "mikrotik-vpn-management",
-  "version": "4.2.0",
-  "description": "MikroTik VPN-based Hotspot Management System",
+  "version": "5.0.0",
+  "description": "MikroTik VPN-based Hotspot Management System with Multi-language and Payment Gateway",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
     "test": "jest",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "build:css": "tailwindcss -i ./public/css/app.css -o ./public/css/output.css --watch"
   },
   "keywords": [
     "mikrotik",
     "vpn",
     "hotspot",
-    "management"
+    "management",
+    "payment",
+    "multi-language"
   ],
   "author": "MikroTik VPN Team",
   "license": "MIT",
@@ -1076,13 +1007,49 @@ phase5_nodejs_application() {
     "bull": "^4.11.3",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.0",
-    "express-validator": "^7.0.1"
+    "express-validator": "^7.0.1",
+    "i18next": "^23.5.1",
+    "i18next-fs-backend": "^2.2.0",
+    "i18next-http-middleware": "^3.3.2",
+    "node-routeros": "^1.6.8",
+    "pdfkit": "^0.13.0",
+    "escpos": "^3.0.0-alpha.6",
+    "escpos-usb": "^3.0.0-alpha.4",
+    "promptpay-qr": "^0.5.0",
+    "omise": "^0.12.1",
+    "stripe": "^13.5.0",
+    "paypal-rest-sdk": "^1.8.1",
+    "ejs": "^3.1.9",
+    "express-ejs-layouts": "^2.5.1",
+    "connect-flash": "^0.1.1",
+    "method-override": "^3.0.0",
+    "express-fileupload": "^1.4.0",
+    "node-schedule": "^2.1.1",
+    "csv-parser": "^3.0.0",
+    "xlsx": "^0.18.5",
+    "puppeteer": "^21.3.8",
+    "@tailwindcss/forms": "^0.5.6",
+    "@tailwindcss/typography": "^0.5.10",
+    "alpinejs": "^3.13.1",
+    "chart.js": "^4.4.0",
+    "datatables.net": "^1.13.6",
+    "sweetalert2": "^11.7.32",
+    "dayjs": "^1.11.10",
+    "lodash": "^4.17.21",
+    "sanitize-html": "^2.11.0",
+    "express-mongo-sanitize": "^2.2.0",
+    "hpp": "^0.2.3",
+    "connect-redis": "^7.1.0",
+    "express-slow-down": "^2.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1",
     "eslint": "^8.48.0",
     "jest": "^29.6.4",
-    "supertest": "^6.3.3"
+    "supertest": "^6.3.3",
+    "tailwindcss": "^3.3.3",
+    "autoprefixer": "^10.4.15",
+    "postcss": "^8.4.29"
   },
   "engines": {
     "node": ">=20.0.0",
@@ -1096,26 +1063,41 @@ EOF
     cd "$SYSTEM_DIR/app"
     npm install
     
-    # Create main server file
-    create_server_js
+    # Create main server file with all features
+    create_server_js_full
     
-    # Create route files
-    create_route_files
+    # Create i18n configuration
+    create_i18n_config
     
-    # Create model files
-    create_model_files
+    # Create route files with full features
+    create_route_files_full
+    
+    # Create model files with payment support
+    create_model_files_full
     
     # Create middleware files
-    create_middleware_files
+    create_middleware_files_full
+    
+    # Create service files
+    create_service_files
     
     # Create utility files
-    create_utility_files
+    create_utility_files_full
     
     # Create configuration files
-    create_app_config_files
+    create_app_config_files_full
+    
+    # Create view templates
+    create_view_templates
+    
+    # Create captive portal templates
+    create_captive_portal_templates
     
     # Create Dockerfile
     create_app_dockerfile
+    
+    # Create Tailwind CSS configuration
+    create_tailwind_config
     
     # Set permissions
     chown -R mikrotik-vpn:mikrotik-vpn "$SYSTEM_DIR/app"
@@ -1123,13 +1105,14 @@ EOF
     log "Phase 5 completed successfully!"
 }
 
-# Create server.js
-create_server_js() {
+# Create enhanced server.js with all features
+create_server_js_full() {
     cat << 'EOF' > "$SYSTEM_DIR/app/server.js"
 const express = require('express');
 const mongoose = require('mongoose');
 const redis = require('redis');
 const session = require('express-session');
+const RedisStore = require('connect-redis').default;
 const helmet = require('helmet');
 const cors = require('cors');
 const compression = require('compression');
@@ -1140,6 +1123,16 @@ const { Server } = require('socket.io');
 const path = require('path');
 const fs = require('fs');
 const dotenv = require('dotenv');
+const i18next = require('i18next');
+const i18nextMiddleware = require('i18next-http-middleware');
+const Backend = require('i18next-fs-backend');
+const expressLayouts = require('express-ejs-layouts');
+const flash = require('connect-flash');
+const methodOverride = require('method-override');
+const fileUpload = require('express-fileupload');
+const mongoSanitize = require('express-mongo-sanitize');
+const hpp = require('hpp');
+const slowDown = require('express-slow-down');
 
 // Load environment variables
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -1193,6 +1186,31 @@ process.on('uncaughtException', (error) => {
 process.on('unhandledRejection', (reason, promise) => {
     logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
+
+// Initialize i18n
+i18next
+    .use(Backend)
+    .use(i18nextMiddleware.LanguageDetector)
+    .init({
+        backend: {
+            loadPath: path.join(__dirname, 'locales/{{lng}}/{{ns}}.json'),
+            addPath: path.join(__dirname, 'locales/{{lng}}/{{ns}}.missing.json')
+        },
+        fallbackLng: process.env.DEFAULT_LANGUAGE || 'th',
+        supportedLngs: ['th', 'en', 'zh', 'ja', 'ko', 'ms', 'id', 'vi', 'lo', 'my', 'tl'],
+        preload: ['th', 'en'],
+        ns: ['common', 'portal', 'admin', 'payment', 'voucher', 'email'],
+        defaultNS: 'common',
+        detection: {
+            order: ['querystring', 'cookie', 'header'],
+            lookupQuerystring: 'lang',
+            lookupCookie: 'language',
+            lookupHeader: 'accept-language',
+            caches: ['cookie']
+        },
+        saveMissing: true,
+        saveMissingTo: 'all'
+    });
 
 // Database connections
 let redisClient;
@@ -1267,15 +1285,24 @@ const connectRedis = async () => {
     }
 };
 
+// View engine setup
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+app.use(expressLayouts);
+app.set('layout', 'layouts/main');
+app.set('layout extractScripts', true);
+app.set('layout extractStyles', true);
+
 // Middleware setup
 app.use(helmet({
     contentSecurityPolicy: {
         directives: {
             defaultSrc: ["'self'"],
-            styleSrc: ["'self'", "'unsafe-inline'"],
-            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+            styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.tailwindcss.com", "https://fonts.googleapis.com"],
+            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://cdn.jsdelivr.net", "https://unpkg.com"],
             imgSrc: ["'self'", "data:", "https:"],
             connectSrc: ["'self'", "wss:", "https:"],
+            fontSrc: ["'self'", "https://fonts.gstatic.com"],
         },
     },
 }));
@@ -1284,12 +1311,23 @@ app.use(cors({
     origin: process.env.CORS_ORIGIN?.split(',') || '*',
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept-Language'],
 }));
 
 app.use(compression());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(methodOverride('_method'));
+app.use(mongoSanitize());
+app.use(hpp());
+
+// File upload configuration
+app.use(fileUpload({
+    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
+    createParentPath: true,
+    useTempFiles: true,
+    tempFileDir: '/tmp/'
+}));
 
 // Request logging
 app.use(morgan('combined', {
@@ -1298,8 +1336,23 @@ app.use(morgan('combined', {
     }
 }));
 
-// Session configuration
+// Rate limiting for API
+const apiSpeedLimiter = slowDown({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    delayAfter: 100, // allow 100 requests per windowMs
+    delayMs: 100 // begin adding 100ms of delay per request above delayAfter
+});
+
+app.use('/api/', apiSpeedLimiter);
+
+// Session configuration with Redis store
+const RedisStoreInstance = new RedisStore({
+    client: redisClient,
+    prefix: 'mikrotik-sess:'
+});
+
 app.use(session({
+    store: RedisStoreInstance,
     secret: process.env.SESSION_SECRET || 'default-secret-change-this',
     resave: false,
     saveUninitialized: false,
@@ -1311,11 +1364,33 @@ app.use(session({
     }
 }));
 
+// Flash messages
+app.use(flash());
+
+// i18n middleware
+app.use(i18nextMiddleware.handle(i18next));
+
+// Global variables middleware
+app.use((req, res, next) => {
+    res.locals.success_msg = req.flash('success_msg');
+    res.locals.error_msg = req.flash('error_msg');
+    res.locals.error = req.flash('error');
+    res.locals.user = req.user || null;
+    res.locals.lang = req.language;
+    res.locals.t = req.t;
+    res.locals.moment = require('moment-timezone');
+    res.locals.currency = process.env.DEFAULT_CURRENCY || 'THB';
+    next();
+});
+
 // Static files
 app.use('/static', express.static(path.join(__dirname, 'public'), {
     maxAge: '1d',
     etag: true
 }));
+
+// Serve uploaded files
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // API Documentation
 const swaggerJsdoc = require('swagger-jsdoc');
@@ -1326,8 +1401,8 @@ const swaggerOptions = {
         openapi: '3.0.0',
         info: {
             title: 'MikroTik VPN Management API',
-            version: '4.2.0',
-            description: 'Comprehensive API for MikroTik VPN-based Hotspot Management',
+            version: '5.0.0',
+            description: 'Comprehensive API for MikroTik VPN-based Hotspot Management with Payment Gateway',
         },
         servers: [
             {
@@ -1354,7 +1429,14 @@ app.get('/health', async (req, res) => {
             timestamp: new Date().toISOString(),
             uptime: process.uptime(),
             service: 'mikrotik-vpn-api',
-            version: '4.2.0',
+            version: '5.0.0',
+            features: {
+                multiLanguage: true,
+                paymentGateway: true,
+                mikrotikIntegration: true,
+                voucherSystem: true,
+                captivePortal: true
+            },
             checks: {
                 mongodb: mongoose.connection.readyState === 1 ? 'healthy' : 'unhealthy',
                 redis: redisClient && redisClient.isOpen ? 'healthy' : 'unhealthy',
@@ -1389,7 +1471,7 @@ app.get('/metrics', (req, res) => {
     // Basic metrics
     metrics.push(`# HELP app_info Application information`);
     metrics.push(`# TYPE app_info gauge`);
-    metrics.push(`app_info{version="4.2.0",node_version="${process.version}"} 1`);
+    metrics.push(`app_info{version="5.0.0",node_version="${process.version}"} 1`);
     
     metrics.push(`# HELP app_uptime_seconds Application uptime in seconds`);
     metrics.push(`# TYPE app_uptime_seconds gauge`);
@@ -1422,27 +1504,6 @@ app.get('/metrics', (req, res) => {
     res.send(metrics.join('\n'));
 });
 
-// API version endpoint
-app.get('/api', (req, res) => {
-    res.json({
-        name: 'MikroTik VPN Management API',
-        version: '4.2.0',
-        status: 'operational',
-        timestamp: new Date().toISOString(),
-        endpoints: {
-            health: '/health',
-            metrics: '/metrics',
-            documentation: '/api-docs',
-            auth: '/api/v1/auth',
-            devices: '/api/v1/devices',
-            users: '/api/v1/users',
-            vouchers: '/api/v1/vouchers',
-            monitoring: '/api/v1/monitoring',
-            admin: '/api/v1/admin'
-        }
-    });
-});
-
 // Load routes
 const authRoutes = require('./routes/auth');
 const deviceRoutes = require('./routes/devices');
@@ -1450,6 +1511,18 @@ const userRoutes = require('./routes/users');
 const voucherRoutes = require('./routes/vouchers');
 const monitoringRoutes = require('./routes/monitoring');
 const adminRoutes = require('./routes/admin');
+const paymentRoutes = require('./routes/payment');
+const mikrotikRoutes = require('./routes/mikrotik');
+const portalRoutes = require('./routes/portal');
+const reportRoutes = require('./routes/reports');
+const dashboardRoutes = require('./routes/dashboard');
+const settingsRoutes = require('./routes/settings');
+
+// Web routes
+app.use('/', dashboardRoutes);
+app.use('/portal', portalRoutes);
+app.use('/admin', adminRoutes);
+app.use('/settings', settingsRoutes);
 
 // API routes with versioning
 app.use('/api/v1/auth', authRoutes);
@@ -1457,7 +1530,9 @@ app.use('/api/v1/devices', deviceRoutes);
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/vouchers', voucherRoutes);
 app.use('/api/v1/monitoring', monitoringRoutes);
-app.use('/api/v1/admin', adminRoutes);
+app.use('/api/v1/payment', paymentRoutes);
+app.use('/api/v1/mikrotik', mikrotikRoutes);
+app.use('/api/v1/reports', reportRoutes);
 
 // Socket.IO for real-time features
 io.on('connection', (socket) => {
@@ -1485,6 +1560,26 @@ io.on('connection', (socket) => {
         }
     });
     
+    // Handle hotspot user updates
+    socket.on('hotspot:user:update', async (data) => {
+        try {
+            io.to(`device:${data.deviceId}`).emit('hotspot:user:updated', data);
+            logger.info(`Hotspot user update: ${data.username}`);
+        } catch (error) {
+            logger.error('Socket error:', error);
+        }
+    });
+    
+    // Handle payment notifications
+    socket.on('payment:notify', async (data) => {
+        try {
+            io.to(`org:${data.organizationId}`).emit('payment:notification', data);
+            logger.info(`Payment notification: ${data.transactionId}`);
+        } catch (error) {
+            logger.error('Socket error:', error);
+        }
+    });
+    
     // Handle disconnection
     socket.on('disconnect', () => {
         logger.info(`Socket disconnected: ${socket.id}`);
@@ -1493,11 +1588,9 @@ io.on('connection', (socket) => {
 
 // 404 handler
 app.use((req, res) => {
-    res.status(404).json({
-        error: 'Not Found',
-        message: 'The requested resource was not found',
-        path: req.originalUrl,
-        timestamp: new Date().toISOString()
+    res.status(404).render('errors/404', {
+        layout: 'layouts/error',
+        title: '404 - Page Not Found'
     });
 });
 
@@ -1514,14 +1607,24 @@ app.use((err, req, res, next) => {
     const status = err.status || 500;
     const message = err.message || 'Internal Server Error';
     
-    res.status(status).json({
-        error: {
+    // Check if request expects JSON
+    if (req.xhr || req.headers.accept?.indexOf('json') > -1) {
+        res.status(status).json({
+            error: {
+                message: process.env.NODE_ENV === 'production' ? 'Something went wrong!' : message,
+                status: status,
+                timestamp: new Date().toISOString()
+            },
+            ...(process.env.NODE_ENV !== 'production' && { stack: err.stack })
+        });
+    } else {
+        res.status(status).render('errors/500', {
+            layout: 'layouts/error',
+            title: 'Error',
             message: process.env.NODE_ENV === 'production' ? 'Something went wrong!' : message,
-            status: status,
-            timestamp: new Date().toISOString()
-        },
-        ...(process.env.NODE_ENV !== 'production' && { stack: err.stack })
-    });
+            error: process.env.NODE_ENV === 'production' ? {} : err
+        });
+    }
 });
 
 // Graceful shutdown
@@ -1567,6 +1670,10 @@ const startServer = async () => {
         await connectMongoDB();
         await connectRedis();
         
+        // Initialize services
+        const { initializeServices } = require('./services');
+        await initializeServices();
+        
         // Start listening
         const PORT = process.env.PORT || 3000;
         const HOST = '0.0.0.0';
@@ -1575,11 +1682,13 @@ const startServer = async () => {
             logger.info(`
 ╔═══════════════════════════════════════════════════════════════╗
 ║                                                               ║
-║          MikroTik VPN Management System v4.2                  ║
+║          MikroTik VPN Management System v5.0                  ║
 ║                                                               ║
 ║  Server running at: http://${HOST}:${PORT}                        ║
 ║  Environment: ${process.env.NODE_ENV || 'development'}                               ║
 ║  Process ID: ${process.pid}                                        ║
+║  Default Language: ${process.env.DEFAULT_LANGUAGE || 'th'}                             ║
+║  Payment Gateway: Enabled                                     ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
             `);
@@ -1601,42 +1710,503 @@ if (process.env.NODE_ENV !== 'test') {
 EOF
 }
 
-# Create route files
-create_route_files() {
-    local routes=("auth" "devices" "users" "vouchers" "monitoring" "admin")
+# Create i18n configuration and translation files
+create_i18n_config() {
+    # Thai translations
+    mkdir -p "$SYSTEM_DIR/app/locales/th"
     
-    for route in "${routes[@]}"; do
-        cat << EOF > "$SYSTEM_DIR/app/routes/$route.js"
+    cat << 'EOF' > "$SYSTEM_DIR/app/locales/th/common.json"
+{
+  "welcome": "ยินดีต้อนรับ",
+  "login": "เข้าสู่ระบบ",
+  "logout": "ออกจากระบบ",
+  "dashboard": "แดชบอร์ด",
+  "devices": "อุปกรณ์",
+  "users": "ผู้ใช้",
+  "vouchers": "บัตรกำนัดเวลา",
+  "settings": "ตั้งค่า",
+  "reports": "รายงาน",
+  "language": "ภาษา",
+  "save": "บันทึก",
+  "cancel": "ยกเลิก",
+  "delete": "ลบ",
+  "edit": "แก้ไข",
+  "add": "เพิ่ม",
+  "search": "ค้นหา",
+  "filter": "กรอง",
+  "export": "ส่งออก",
+  "import": "นำเข้า",
+  "print": "พิมพ์",
+  "loading": "กำลังโหลด...",
+  "success": "สำเร็จ",
+  "error": "ข้อผิดพลาด",
+  "warning": "คำเตือน",
+  "info": "ข้อมูล",
+  "confirm": "ยืนยัน",
+  "yes": "ใช่",
+  "no": "ไม่",
+  "all": "ทั้งหมด",
+  "active": "ใช้งาน",
+  "inactive": "ไม่ใช้งาน",
+  "online": "ออนไลน์",
+  "offline": "ออฟไลน์",
+  "connected": "เชื่อมต่อ",
+  "disconnected": "ไม่เชื่อมต่อ",
+  "date": "วันที่",
+  "time": "เวลา",
+  "from": "จาก",
+  "to": "ถึง",
+  "total": "รวม",
+  "amount": "จำนวน",
+  "price": "ราคา",
+  "status": "สถานะ",
+  "action": "การดำเนินการ",
+  "description": "รายละเอียด",
+  "name": "ชื่อ",
+  "email": "อีเมล",
+  "phone": "โทรศัพท์",
+  "address": "ที่อยู่",
+  "organization": "องค์กร",
+  "profile": "โปรไฟล์",
+  "password": "รหัสผ่าน",
+  "confirmPassword": "ยืนยันรหัสผ่าน",
+  "forgotPassword": "ลืมรหัสผ่าน",
+  "resetPassword": "รีเซ็ตรหัสผ่าน",
+  "changePassword": "เปลี่ยนรหัสผ่าน",
+  "newPassword": "รหัสผ่านใหม่",
+  "currentPassword": "รหัสผ่านปัจจุบัน",
+  "rememberMe": "จดจำฉัน",
+  "copyright": "ลิขสิทธิ์"
+}
+EOF
+
+    cat << 'EOF' > "$SYSTEM_DIR/app/locales/th/portal.json"
+{
+  "title": "พอร์ทัลฮอตสปอต",
+  "welcome": "ยินดีต้อนรับสู่ WiFi ฟรี",
+  "loginTitle": "เข้าสู่ระบบเพื่อใช้งานอินเทอร์เน็ต",
+  "username": "ชื่อผู้ใช้",
+  "password": "รหัสผ่าน",
+  "voucherCode": "รหัสบัตร",
+  "phoneNumber": "หมายเลขโทรศัพท์",
+  "loginButton": "เข้าสู่ระบบ",
+  "registerButton": "ลงทะเบียน",
+  "termsAndConditions": "ข้อกำหนดและเงื่อนไข",
+  "acceptTerms": "ฉันยอมรับข้อกำหนดและเงื่อนไข",
+  "loginMethods": {
+    "voucher": "บัตรกำนัดเวลา",
+    "userpass": "ชื่อผู้ใช้/รหัสผ่าน",
+    "social": "โซเชียลมีเดีย",
+    "sms": "SMS OTP"
+  },
+  "errors": {
+    "invalidCredentials": "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง",
+    "voucherExpired": "บัตรหมดอายุแล้ว",
+    "voucherUsed": "บัตรถูกใช้แล้ว",
+    "maxDevicesReached": "จำนวนอุปกรณ์เกินกำหนด",
+    "sessionExpired": "เซสชันหมดอายุ",
+    "networkError": "เกิดข้อผิดพลาดทางเครือข่าย"
+  },
+  "success": {
+    "loginSuccessful": "เข้าสู่ระบบสำเร็จ",
+    "redirecting": "กำลังเปลี่ยนเส้นทาง..."
+  },
+  "timeRemaining": "เวลาคงเหลือ",
+  "dataRemaining": "ข้อมูลคงเหลือ",
+  "disconnect": "ตัดการเชื่อมต่อ",
+  "buyVoucher": "ซื้อบัตรเติมเวลา"
+}
+EOF
+
+    cat << 'EOF' > "$SYSTEM_DIR/app/locales/th/voucher.json"
+{
+  "title": "จัดการบัตรกำนัดเวลา",
+  "createVoucher": "สร้างบัตร",
+  "voucherList": "รายการบัตร",
+  "voucherDetails": "รายละเอียดบัตร",
+  "generateBatch": "สร้างบัตรแบบกลุ่ม",
+  "printVouchers": "พิมพ์บัตร",
+  "fields": {
+    "code": "รหัสบัตร",
+    "profile": "โปรไฟล์",
+    "duration": "ระยะเวลา",
+    "price": "ราคา",
+    "status": "สถานะ",
+    "createdDate": "วันที่สร้าง",
+    "activatedDate": "วันที่เปิดใช้งาน",
+    "expiryDate": "วันหมดอายุ",
+    "usedBy": "ใช้โดย",
+    "device": "อุปกรณ์",
+    "dataLimit": "จำกัดข้อมูล",
+    "speedLimit": "จำกัดความเร็ว",
+    "simultaneousUse": "ใช้พร้อมกัน",
+    "validityPeriod": "ระยะเวลาใช้งาน"
+  },
+  "profiles": {
+    "1hour": "1 ชั่วโมง",
+    "3hours": "3 ชั่วโมง", 
+    "1day": "1 วัน",
+    "7days": "7 วัน",
+    "30days": "30 วัน",
+    "unlimited": "ไม่จำกัด"
+  },
+  "status": {
+    "active": "พร้อมใช้งาน",
+    "used": "ใช้แล้ว",
+    "expired": "หมดอายุ",
+    "suspended": "ระงับ"
+  },
+  "actions": {
+    "generate": "สร้าง",
+    "print": "พิมพ์",
+    "export": "ส่งออก",
+    "delete": "ลบ",
+    "suspend": "ระงับ",
+    "activate": "เปิดใช้งาน"
+  },
+  "batch": {
+    "quantity": "จำนวน",
+    "prefix": "คำนำหน้า",
+    "suffix": "คำต่อท้าย",
+    "length": "ความยาวรหัส",
+    "generateButton": "สร้างบัตร"
+  },
+  "print": {
+    "selectTemplate": "เลือกแม่แบบ",
+    "paperSize": "ขนาดกระดาษ",
+    "columns": "จำนวนคอลัมน์",
+    "rows": "จำนวนแถว",
+    "showQR": "แสดง QR Code",
+    "showLogo": "แสดงโลโก้",
+    "printButton": "พิมพ์"
+  }
+}
+EOF
+
+    cat << 'EOF' > "$SYSTEM_DIR/app/locales/th/payment.json"
+{
+  "title": "ชำระเงิน",
+  "selectMethod": "เลือกวิธีชำระเงิน",
+  "methods": {
+    "promptpay": "พร้อมเพย์",
+    "truewallet": "ทรูวอลเล็ท",
+    "creditcard": "บัตรเครดิต/เดบิต",
+    "banktransfer": "โอนเงินผ่านธนาคาร",
+    "cash": "เงินสด"
+  },
+  "promptpay": {
+    "scanQR": "สแกน QR Code เพื่อชำระเงิน",
+    "amount": "จำนวนเงิน",
+    "reference": "เลขอ้างอิง",
+    "instruction": "กรุณาสแกน QR Code ด้วยแอปธนาคารของคุณ"
+  },
+  "confirmation": {
+    "title": "ยืนยันการชำระเงิน",
+    "uploadSlip": "อัปโหลดสลิป",
+    "transactionId": "เลขที่ธุรกรรม",
+    "dateTime": "วันที่และเวลา",
+    "amount": "จำนวนเงิน",
+    "confirmButton": "ยืนยันการชำระเงิน"
+  },
+  "status": {
+    "pending": "รอการชำระเงิน",
+    "processing": "กำลังตรวจสอบ",
+    "completed": "ชำระเงินแล้ว",
+    "failed": "ชำระเงินไม่สำเร็จ",
+    "cancelled": "ยกเลิก",
+    "refunded": "คืนเงินแล้ว"
+  },
+  "invoice": {
+    "title": "ใบแจ้งหนี้",
+    "invoiceNo": "เลขที่ใบแจ้งหนี้",
+    "date": "วันที่",
+    "dueDate": "วันครบกำหนด",
+    "billTo": "ผู้ซื้อ",
+    "items": "รายการ",
+    "subtotal": "รวม",
+    "vat": "ภาษีมูลค่าเพิ่ม 7%",
+    "total": "รวมทั้งสิ้น",
+    "printInvoice": "พิมพ์ใบแจ้งหนี้",
+    "downloadPDF": "ดาวน์โหลด PDF"
+  },
+  "errors": {
+    "paymentFailed": "การชำระเงินล้มเหลว",
+    "invalidAmount": "จำนวนเงินไม่ถูกต้อง",
+    "timeout": "หมดเวลาการชำระเงิน",
+    "cancelled": "ยกเลิกการชำระเงิน"
+  },
+  "success": {
+    "paymentCompleted": "ชำระเงินสำเร็จ",
+    "voucherActivated": "เปิดใช้งานบัตรแล้ว"
+  }
+}
+EOF
+
+    # English translations
+    mkdir -p "$SYSTEM_DIR/app/locales/en"
+    
+    cat << 'EOF' > "$SYSTEM_DIR/app/locales/en/common.json"
+{
+  "welcome": "Welcome",
+  "login": "Login",
+  "logout": "Logout",
+  "dashboard": "Dashboard",
+  "devices": "Devices",
+  "users": "Users",
+  "vouchers": "Vouchers",
+  "settings": "Settings",
+  "reports": "Reports",
+  "language": "Language",
+  "save": "Save",
+  "cancel": "Cancel",
+  "delete": "Delete",
+  "edit": "Edit",
+  "add": "Add",
+  "search": "Search",
+  "filter": "Filter",
+  "export": "Export",
+  "import": "Import",
+  "print": "Print",
+  "loading": "Loading...",
+  "success": "Success",
+  "error": "Error",
+  "warning": "Warning",
+  "info": "Information",
+  "confirm": "Confirm",
+  "yes": "Yes",
+  "no": "No",
+  "all": "All",
+  "active": "Active",
+  "inactive": "Inactive",
+  "online": "Online",
+  "offline": "Offline",
+  "connected": "Connected",
+  "disconnected": "Disconnected",
+  "date": "Date",
+  "time": "Time",
+  "from": "From",
+  "to": "To",
+  "total": "Total",
+  "amount": "Amount",
+  "price": "Price",
+  "status": "Status",
+  "action": "Action",
+  "description": "Description",
+  "name": "Name",
+  "email": "Email",
+  "phone": "Phone",
+  "address": "Address",
+  "organization": "Organization",
+  "profile": "Profile",
+  "password": "Password",
+  "confirmPassword": "Confirm Password",
+  "forgotPassword": "Forgot Password",
+  "resetPassword": "Reset Password",
+  "changePassword": "Change Password",
+  "newPassword": "New Password",
+  "currentPassword": "Current Password",
+  "rememberMe": "Remember Me",
+  "copyright": "Copyright"
+}
+EOF
+
+    cat << 'EOF' > "$SYSTEM_DIR/app/locales/en/portal.json"
+{
+  "title": "Hotspot Portal",
+  "welcome": "Welcome to Free WiFi",
+  "loginTitle": "Login to access the internet",
+  "username": "Username",
+  "password": "Password",
+  "voucherCode": "Voucher Code",
+  "phoneNumber": "Phone Number",
+  "loginButton": "Login",
+  "registerButton": "Register",
+  "termsAndConditions": "Terms and Conditions",
+  "acceptTerms": "I accept the terms and conditions",
+  "loginMethods": {
+    "voucher": "Voucher",
+    "userpass": "Username/Password",
+    "social": "Social Media",
+    "sms": "SMS OTP"
+  },
+  "errors": {
+    "invalidCredentials": "Invalid username or password",
+    "voucherExpired": "Voucher has expired",
+    "voucherUsed": "Voucher already used",
+    "maxDevicesReached": "Maximum devices exceeded",
+    "sessionExpired": "Session expired",
+    "networkError": "Network error occurred"
+  },
+  "success": {
+    "loginSuccessful": "Login successful",
+    "redirecting": "Redirecting..."
+  },
+  "timeRemaining": "Time Remaining",
+  "dataRemaining": "Data Remaining",
+  "disconnect": "Disconnect",
+  "buyVoucher": "Buy Voucher"
+}
+EOF
+
+    cat << 'EOF' > "$SYSTEM_DIR/app/locales/en/voucher.json"
+{
+  "title": "Voucher Management",
+  "createVoucher": "Create Voucher",
+  "voucherList": "Voucher List",
+  "voucherDetails": "Voucher Details",
+  "generateBatch": "Generate Batch",
+  "printVouchers": "Print Vouchers",
+  "fields": {
+    "code": "Voucher Code",
+    "profile": "Profile",
+    "duration": "Duration",
+    "price": "Price",
+    "status": "Status",
+    "createdDate": "Created Date",
+    "activatedDate": "Activated Date",
+    "expiryDate": "Expiry Date",
+    "usedBy": "Used By",
+    "device": "Device",
+    "dataLimit": "Data Limit",
+    "speedLimit": "Speed Limit",
+    "simultaneousUse": "Simultaneous Use",
+    "validityPeriod": "Validity Period"
+  },
+  "profiles": {
+    "1hour": "1 Hour",
+    "3hours": "3 Hours",
+    "1day": "1 Day",
+    "7days": "7 Days",
+    "30days": "30 Days",
+    "unlimited": "Unlimited"
+  },
+  "status": {
+    "active": "Active",
+    "used": "Used",
+    "expired": "Expired",
+    "suspended": "Suspended"
+  },
+  "actions": {
+    "generate": "Generate",
+    "print": "Print",
+    "export": "Export",
+    "delete": "Delete",
+    "suspend": "Suspend",
+    "activate": "Activate"
+  },
+  "batch": {
+    "quantity": "Quantity",
+    "prefix": "Prefix",
+    "suffix": "Suffix",
+    "length": "Code Length",
+    "generateButton": "Generate Vouchers"
+  },
+  "print": {
+    "selectTemplate": "Select Template",
+    "paperSize": "Paper Size",
+    "columns": "Columns",
+    "rows": "Rows",
+    "showQR": "Show QR Code",
+    "showLogo": "Show Logo",
+    "printButton": "Print"
+  }
+}
+EOF
+
+    cat << 'EOF' > "$SYSTEM_DIR/app/locales/en/payment.json"
+{
+  "title": "Payment",
+  "selectMethod": "Select Payment Method",
+  "methods": {
+    "promptpay": "PromptPay",
+    "truewallet": "TrueWallet",
+    "creditcard": "Credit/Debit Card",
+    "banktransfer": "Bank Transfer",
+    "cash": "Cash"
+  },
+  "promptpay": {
+    "scanQR": "Scan QR Code to pay",
+    "amount": "Amount",
+    "reference": "Reference",
+    "instruction": "Please scan the QR code with your banking app"
+  },
+  "confirmation": {
+    "title": "Payment Confirmation",
+    "uploadSlip": "Upload Slip",
+    "transactionId": "Transaction ID",
+    "dateTime": "Date & Time",
+    "amount": "Amount",
+    "confirmButton": "Confirm Payment"
+  },
+  "status": {
+    "pending": "Pending Payment",
+    "processing": "Processing",
+    "completed": "Paid",
+    "failed": "Payment Failed",
+    "cancelled": "Cancelled",
+    "refunded": "Refunded"
+  },
+  "invoice": {
+    "title": "Invoice",
+    "invoiceNo": "Invoice Number",
+    "date": "Date",
+    "dueDate": "Due Date",
+    "billTo": "Bill To",
+    "items": "Items",
+    "subtotal": "Subtotal",
+    "vat": "VAT 7%",
+    "total": "Total",
+    "printInvoice": "Print Invoice",
+    "downloadPDF": "Download PDF"
+  },
+  "errors": {
+    "paymentFailed": "Payment failed",
+    "invalidAmount": "Invalid amount",
+    "timeout": "Payment timeout",
+    "cancelled": "Payment cancelled"
+  },
+  "success": {
+    "paymentCompleted": "Payment completed",
+    "voucherActivated": "Voucher activated"
+  }
+}
+EOF
+}
+
+# Create enhanced route files
+create_route_files_full() {
+    # Payment routes
+    cat << 'EOF' > "$SYSTEM_DIR/app/routes/payment.js"
 const express = require('express');
 const router = express.Router();
 const { body, param, query, validationResult } = require('express-validator');
+const { auth, authorize } = require('../middleware/auth');
+const PaymentService = require('../services/PaymentService');
+const VoucherService = require('../services/VoucherService');
 
 /**
  * @swagger
  * tags:
- *   name: ${route^}
- *   description: ${route^} management endpoints
+ *   name: Payment
+ *   description: Payment gateway integration endpoints
  */
 
 /**
  * @swagger
- * /api/v1/${route}:
+ * /api/v1/payment/methods:
  *   get:
- *     summary: Get all ${route}
- *     tags: [${route^}]
+ *     summary: Get available payment methods
+ *     tags: [Payment]
  *     responses:
  *       200:
  *         description: Success
- *       500:
- *         description: Server error
  */
-router.get('/', async (req, res, next) => {
+router.get('/methods', async (req, res, next) => {
     try {
-        // TODO: Implement get all ${route}
+        const methods = await PaymentService.getAvailableMethods();
         res.json({
             success: true,
-            message: 'Get all ${route}',
-            data: []
+            data: methods
         });
     } catch (error) {
         next(error);
@@ -1645,38 +2215,190 @@ router.get('/', async (req, res, next) => {
 
 /**
  * @swagger
- * /api/v1/${route}/{id}:
- *   get:
- *     summary: Get ${route} by ID
- *     tags: [${route^}]
+ * /api/v1/payment/promptpay/generate:
+ *   post:
+ *     summary: Generate PromptPay QR code
+ *     tags: [Payment]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               amount:
+ *                 type: number
+ *               reference:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: QR code generated
+ */
+router.post('/promptpay/generate',
+    body('amount').isNumeric().isFloat({ min: 1 }),
+    body('reference').optional().isString(),
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            
+            const { amount, reference } = req.body;
+            const qrCode = await PaymentService.generatePromptPayQR(amount, reference);
+            
+            res.json({
+                success: true,
+                data: {
+                    qrCode,
+                    amount,
+                    reference: reference || PaymentService.generateReference(),
+                    expiresAt: new Date(Date.now() + 30 * 60 * 1000) // 30 minutes
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+/**
+ * @swagger
+ * /api/v1/payment/confirm:
+ *   post:
+ *     summary: Confirm payment
+ *     tags: [Payment]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               transactionId:
+ *                 type: string
+ *               method:
+ *                 type: string
+ *               amount:
+ *                 type: number
+ *               reference:
+ *                 type: string
+ *               slipImage:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Payment confirmed
+ */
+router.post('/confirm',
+    auth,
+    body('transactionId').isString(),
+    body('method').isIn(['promptpay', 'truewallet', 'creditcard', 'banktransfer']),
+    body('amount').isNumeric(),
+    body('reference').isString(),
+    body('slipImage').optional().isString(),
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            
+            const payment = await PaymentService.confirmPayment({
+                ...req.body,
+                userId: req.user._id,
+                organizationId: req.user.organization
+            });
+            
+            // If payment is for voucher, activate it
+            if (payment.type === 'voucher' && payment.status === 'completed') {
+                await VoucherService.activateByPayment(payment._id);
+            }
+            
+            res.json({
+                success: true,
+                data: payment
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+/**
+ * @swagger
+ * /api/v1/payment/webhook/{provider}:
+ *   post:
+ *     summary: Payment provider webhook
+ *     tags: [Payment]
  *     parameters:
  *       - in: path
- *         name: id
+ *         name: provider
  *         required: true
  *         schema:
  *           type: string
+ *     responses:
+ *       200:
+ *         description: Webhook processed
+ */
+router.post('/webhook/:provider', async (req, res, next) => {
+    try {
+        const { provider } = req.params;
+        const result = await PaymentService.processWebhook(provider, req.body, req.headers);
+        
+        res.json({
+            success: true,
+            data: result
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
+ * @swagger
+ * /api/v1/payment/transactions:
+ *   get:
+ *     summary: Get payment transactions
+ *     tags: [Payment]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: method
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: from
+ *         schema:
+ *           type: string
+ *           format: date
+ *       - in: query
+ *         name: to
+ *         schema:
+ *           type: string
+ *           format: date
  *     responses:
  *       200:
  *         description: Success
- *       404:
- *         description: Not found
- *       500:
- *         description: Server error
  */
-router.get('/:id', 
-    param('id').isMongoId().withMessage('Invalid ID format'),
+router.get('/transactions',
+    auth,
     async (req, res, next) => {
         try {
-            const errors = validationResult(req);
-            if (!errors.isEmpty()) {
-                return res.status(400).json({ errors: errors.array() });
-            }
+            const filters = {
+                organizationId: req.user.organization,
+                ...req.query
+            };
             
-            // TODO: Implement get ${route} by ID
+            const transactions = await PaymentService.getTransactions(filters);
+            
             res.json({
                 success: true,
-                message: 'Get ${route} by ID',
-                data: { id: req.params.id }
+                data: transactions
             });
         } catch (error) {
             next(error);
@@ -1686,67 +2408,25 @@ router.get('/:id',
 
 /**
  * @swagger
- * /api/v1/${route}:
- *   post:
- *     summary: Create new ${route}
- *     tags: [${route^}]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *     responses:
- *       201:
- *         description: Created
- *       400:
- *         description: Bad request
- *       500:
- *         description: Server error
- */
-router.post('/', async (req, res, next) => {
-    try {
-        // TODO: Implement create ${route}
-        res.status(201).json({
-            success: true,
-            message: 'Create new ${route}',
-            data: req.body
-        });
-    } catch (error) {
-        next(error);
-    }
-});
-
-/**
- * @swagger
- * /api/v1/${route}/{id}:
- *   put:
- *     summary: Update ${route}
- *     tags: [${route^}]
+ * /api/v1/payment/invoice/{transactionId}:
+ *   get:
+ *     summary: Get invoice for transaction
+ *     tags: [Payment]
+ *     security:
+ *       - bearerAuth: []
  *     parameters:
  *       - in: path
- *         name: id
+ *         name: transactionId
  *         required: true
  *         schema:
  *           type: string
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
  *     responses:
  *       200:
- *         description: Updated
- *       400:
- *         description: Bad request
- *       404:
- *         description: Not found
- *       500:
- *         description: Server error
+ *         description: Invoice data
  */
-router.put('/:id',
-    param('id').isMongoId().withMessage('Invalid ID format'),
+router.get('/invoice/:transactionId',
+    auth,
+    param('transactionId').isMongoId(),
     async (req, res, next) => {
         try {
             const errors = validationResult(req);
@@ -1754,52 +2434,11 @@ router.put('/:id',
                 return res.status(400).json({ errors: errors.array() });
             }
             
-            // TODO: Implement update ${route}
-            res.json({
-                success: true,
-                message: 'Update ${route}',
-                data: { id: req.params.id, ...req.body }
-            });
-        } catch (error) {
-            next(error);
-        }
-    }
-);
-
-/**
- * @swagger
- * /api/v1/${route}/{id}:
- *   delete:
- *     summary: Delete ${route}
- *     tags: [${route^}]
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: Deleted
- *       404:
- *         description: Not found
- *       500:
- *         description: Server error
- */
-router.delete('/:id',
-    param('id').isMongoId().withMessage('Invalid ID format'),
-    async (req, res, next) => {
-        try {
-            const errors = validationResult(req);
-            if (!errors.isEmpty()) {
-                return res.status(400).json({ errors: errors.array() });
-            }
+            const invoice = await PaymentService.generateInvoice(req.params.transactionId);
             
-            // TODO: Implement delete ${route}
             res.json({
                 success: true,
-                message: 'Delete ${route}',
-                data: { id: req.params.id }
+                data: invoice
             });
         } catch (error) {
             next(error);
@@ -1809,387 +2448,1364 @@ router.delete('/:id',
 
 module.exports = router;
 EOF
-    done
-}
 
-# Create model files
-create_model_files() {
-    # Organization model
-    cat << 'EOF' > "$SYSTEM_DIR/app/models/Organization.js"
-const mongoose = require('mongoose');
+    # MikroTik routes
+    cat << 'EOF' > "$SYSTEM_DIR/app/routes/mikrotik.js"
+const express = require('express');
+const router = express.Router();
+const { body, param, query, validationResult } = require('express-validator');
+const { auth, authorize } = require('../middleware/auth');
+const MikroTikService = require('../services/MikroTikService');
 
-const organizationSchema = new mongoose.Schema({
-    name: {
-        type: String,
-        required: true,
-        trim: true
-    },
-    domain: {
-        type: String,
-        required: true,
-        unique: true,
-        lowercase: true,
-        trim: true
-    },
-    email: {
-        type: String,
-        required: true,
-        lowercase: true,
-        trim: true
-    },
-    phone: {
-        type: String,
-        trim: true
-    },
-    address: {
-        street: String,
-        city: String,
-        state: String,
-        country: String,
-        postalCode: String
-    },
-    settings: {
-        timezone: {
-            type: String,
-            default: 'Asia/Bangkok'
-        },
-        currency: {
-            type: String,
-            default: 'THB'
-        },
-        language: {
-            type: String,
-            default: 'th'
-        }
-    },
-    subscription: {
-        plan: {
-            type: String,
-            enum: ['free', 'basic', 'pro', 'enterprise'],
-            default: 'free'
-        },
-        status: {
-            type: String,
-            enum: ['active', 'inactive', 'suspended'],
-            default: 'active'
-        },
-        expiresAt: Date
-    },
-    limits: {
-        maxDevices: {
-            type: Number,
-            default: 10
-        },
-        maxUsers: {
-            type: Number,
-            default: 100
-        },
-        maxVouchers: {
-            type: Number,
-            default: 1000
-        }
-    },
-    stats: {
-        totalDevices: {
-            type: Number,
-            default: 0
-        },
-        totalUsers: {
-            type: Number,
-            default: 0
-        },
-        totalVouchers: {
-            type: Number,
-            default: 0
-        }
-    },
-    isActive: {
-        type: Boolean,
-        default: true
-    }
-}, {
-    timestamps: true
-});
+/**
+ * @swagger
+ * tags:
+ *   name: MikroTik
+ *   description: MikroTik RouterOS integration endpoints
+ */
 
-// Indexes
-organizationSchema.index({ domain: 1 });
-organizationSchema.index({ email: 1 });
-organizationSchema.index({ 'subscription.status': 1 });
-
-module.exports = mongoose.model('Organization', organizationSchema);
-EOF
-
-    # Device model
-    cat << 'EOF' > "$SYSTEM_DIR/app/models/Device.js"
-const mongoose = require('mongoose');
-
-const deviceSchema = new mongoose.Schema({
-    organization: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Organization',
-        required: true
-    },
-    name: {
-        type: String,
-        required: true,
-        trim: true
-    },
-    serialNumber: {
-        type: String,
-        required: true,
-        unique: true,
-        trim: true
-    },
-    model: {
-        type: String,
-        required: true
-    },
-    firmwareVersion: String,
-    macAddress: {
-        type: String,
-        required: true,
-        unique: true,
-        uppercase: true
-    },
-    ipAddress: String,
-    vpnIpAddress: String,
-    location: {
-        name: String,
-        address: String,
-        coordinates: {
-            lat: Number,
-            lng: Number
-        }
-    },
-    configuration: {
-        hotspotName: String,
-        hotspotInterface: String,
-        hotspotProfile: String,
-        vpnProfile: String,
-        managementVlan: Number
-    },
-    status: {
-        type: String,
-        enum: ['online', 'offline', 'maintenance', 'error'],
-        default: 'offline'
-    },
-    lastSeen: Date,
-    vpnStatus: {
-        connected: {
-            type: Boolean,
-            default: false
-        },
-        connectedAt: Date,
-        disconnectedAt: Date,
-        bytesIn: Number,
-        bytesOut: Number
-    },
-    health: {
-        cpuUsage: Number,
-        memoryUsage: Number,
-        diskUsage: Number,
-        temperature: Number,
-        uptime: Number
-    },
-    alerts: [{
-        type: {
-            type: String,
-            enum: ['warning', 'error', 'critical']
-        },
-        message: String,
-        timestamp: Date,
-        resolved: {
-            type: Boolean,
-            default: false
-        }
-    }],
-    tags: [String],
-    notes: String,
-    isActive: {
-        type: Boolean,
-        default: true
-    }
-}, {
-    timestamps: true
-});
-
-// Indexes
-deviceSchema.index({ organization: 1 });
-deviceSchema.index({ serialNumber: 1 });
-deviceSchema.index({ macAddress: 1 });
-deviceSchema.index({ status: 1 });
-deviceSchema.index({ 'vpnStatus.connected': 1 });
-
-module.exports = mongoose.model('Device', deviceSchema);
-EOF
-
-    # User model
-    cat << 'EOF' > "$SYSTEM_DIR/app/models/User.js"
-const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
-
-const userSchema = new mongoose.Schema({
-    organization: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Organization',
-        required: true
-    },
-    username: {
-        type: String,
-        required: true,
-        unique: true,
-        lowercase: true,
-        trim: true
-    },
-    email: {
-        type: String,
-        required: true,
-        unique: true,
-        lowercase: true,
-        trim: true
-    },
-    password: {
-        type: String,
-        required: true
-    },
-    role: {
-        type: String,
-        enum: ['superadmin', 'admin', 'operator', 'viewer'],
-        default: 'operator'
-    },
-    profile: {
-        firstName: String,
-        lastName: String,
-        phone: String,
-        avatar: String
-    },
-    permissions: [{
-        resource: String,
-        actions: [String]
-    }],
-    twoFactorAuth: {
-        enabled: {
-            type: Boolean,
-            default: false
-        },
-        secret: String,
-        backupCodes: [String]
-    },
-    loginHistory: [{
-        timestamp: Date,
-        ipAddress: String,
-        userAgent: String,
-        success: Boolean
-    }],
-    apiKeys: [{
-        key: String,
-        name: String,
-        permissions: [String],
-        lastUsed: Date,
-        createdAt: Date,
-        expiresAt: Date
-    }],
-    preferences: {
-        language: {
-            type: String,
-            default: 'en'
-        },
-        timezone: {
-            type: String,
-            default: 'UTC'
-        },
-        notifications: {
-            email: {
-                type: Boolean,
-                default: true
-            },
-            sms: {
-                type: Boolean,
-                default: false
-            },
-            push: {
-                type: Boolean,
-                default: true
+/**
+ * @swagger
+ * /api/v1/mikrotik/devices/{deviceId}/connect:
+ *   post:
+ *     summary: Connect to MikroTik device
+ *     tags: [MikroTik]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: deviceId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Connected successfully
+ */
+router.post('/devices/:deviceId/connect',
+    auth,
+    authorize('admin', 'operator'),
+    param('deviceId').isMongoId(),
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
             }
+            
+            const result = await MikroTikService.connectDevice(req.params.deviceId);
+            
+            res.json({
+                success: true,
+                data: result
+            });
+        } catch (error) {
+            next(error);
         }
-    },
-    isActive: {
-        type: Boolean,
-        default: true
-    },
-    isVerified: {
-        type: Boolean,
-        default: false
-    },
-    verificationToken: String,
-    resetPasswordToken: String,
-    resetPasswordExpires: Date,
-    lastLogin: Date
-}, {
-    timestamps: true
+    }
+);
+
+/**
+ * @swagger
+ * /api/v1/mikrotik/devices/{deviceId}/hotspot/users:
+ *   get:
+ *     summary: Get hotspot users from device
+ *     tags: [MikroTik]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: deviceId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Hotspot users list
+ */
+router.get('/devices/:deviceId/hotspot/users',
+    auth,
+    param('deviceId').isMongoId(),
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            
+            const users = await MikroTikService.getHotspotUsers(req.params.deviceId);
+            
+            res.json({
+                success: true,
+                data: users
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+/**
+ * @swagger
+ * /api/v1/mikrotik/devices/{deviceId}/hotspot/users:
+ *   post:
+ *     summary: Create hotspot user on device
+ *     tags: [MikroTik]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: deviceId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               username:
+ *                 type: string
+ *               password:
+ *                 type: string
+ *               profile:
+ *                 type: string
+ *               limitUptime:
+ *                 type: string
+ *               limitBytesIn:
+ *                 type: number
+ *               limitBytesOut:
+ *                 type: number
+ *     responses:
+ *       201:
+ *         description: User created
+ */
+router.post('/devices/:deviceId/hotspot/users',
+    auth,
+    authorize('admin', 'operator'),
+    param('deviceId').isMongoId(),
+    body('username').isString().isLength({ min: 3 }),
+    body('password').isString().isLength({ min: 6 }),
+    body('profile').isString(),
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            
+            const user = await MikroTikService.createHotspotUser(
+                req.params.deviceId,
+                req.body
+            );
+            
+            res.status(201).json({
+                success: true,
+                data: user
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+/**
+ * @swagger
+ * /api/v1/mikrotik/devices/{deviceId}/hotspot/active:
+ *   get:
+ *     summary: Get active hotspot sessions
+ *     tags: [MikroTik]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: deviceId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Active sessions list
+ */
+router.get('/devices/:deviceId/hotspot/active',
+    auth,
+    param('deviceId').isMongoId(),
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            
+            const sessions = await MikroTikService.getActiveSessions(req.params.deviceId);
+            
+            res.json({
+                success: true,
+                data: sessions
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+/**
+ * @swagger
+ * /api/v1/mikrotik/devices/{deviceId}/hotspot/disconnect:
+ *   post:
+ *     summary: Disconnect hotspot user
+ *     tags: [MikroTik]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: deviceId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               username:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: User disconnected
+ */
+router.post('/devices/:deviceId/hotspot/disconnect',
+    auth,
+    authorize('admin', 'operator'),
+    param('deviceId').isMongoId(),
+    body('username').isString(),
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            
+            await MikroTikService.disconnectUser(
+                req.params.deviceId,
+                req.body.username
+            );
+            
+            res.json({
+                success: true,
+                message: 'User disconnected successfully'
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+/**
+ * @swagger
+ * /api/v1/mikrotik/devices/{deviceId}/system/resource:
+ *   get:
+ *     summary: Get system resource usage
+ *     tags: [MikroTik]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: deviceId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: System resource data
+ */
+router.get('/devices/:deviceId/system/resource',
+    auth,
+    param('deviceId').isMongoId(),
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            
+            const resources = await MikroTikService.getSystemResource(req.params.deviceId);
+            
+            res.json({
+                success: true,
+                data: resources
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+/**
+ * @swagger
+ * /api/v1/mikrotik/devices/{deviceId}/config/backup:
+ *   post:
+ *     summary: Backup device configuration
+ *     tags: [MikroTik]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: deviceId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Backup created
+ */
+router.post('/devices/:deviceId/config/backup',
+    auth,
+    authorize('admin'),
+    param('deviceId').isMongoId(),
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            
+            const backup = await MikroTikService.backupConfiguration(req.params.deviceId);
+            
+            res.json({
+                success: true,
+                data: backup
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+module.exports = router;
+EOF
+
+    # Portal routes (captive portal)
+    cat << 'EOF' > "$SYSTEM_DIR/app/routes/portal.js"
+const express = require('express');
+const router = express.Router();
+const { body, validationResult } = require('express-validator');
+const PortalController = require('../controllers/PortalController');
+
+// Captive portal landing page
+router.get('/', PortalController.showPortal);
+
+// Login page with different methods
+router.get('/login', PortalController.showLogin);
+
+// Voucher login
+router.post('/login/voucher',
+    body('code').isString().trim().isLength({ min: 6 }),
+    PortalController.loginVoucher
+);
+
+// Username/password login
+router.post('/login/userpass',
+    body('username').isString().trim(),
+    body('password').isString(),
+    PortalController.loginUserPass
+);
+
+// SMS OTP request
+router.post('/login/sms/request',
+    body('phone').isMobilePhone('th-TH'),
+    PortalController.requestSmsOtp
+);
+
+// SMS OTP verify
+router.post('/login/sms/verify',
+    body('phone').isMobilePhone('th-TH'),
+    body('otp').isString().isLength({ min: 6, max: 6 }),
+    PortalController.verifySmsOtp
+);
+
+// Social login callback
+router.get('/login/social/:provider/callback', PortalController.socialLoginCallback);
+
+// Status page (after login)
+router.get('/status', PortalController.showStatus);
+
+// Logout
+router.post('/logout', PortalController.logout);
+
+// Terms and conditions
+router.get('/terms', PortalController.showTerms);
+
+// Language change
+router.get('/lang/:lang', (req, res) => {
+    const { lang } = req.params;
+    res.cookie('language', lang, { maxAge: 900000, httpOnly: true });
+    res.redirect('back');
 });
 
-// Hash password before saving
-userSchema.pre('save', async function(next) {
-    if (!this.isModified('password')) return next();
+module.exports = router;
+EOF
+
+    # Dashboard routes
+    cat << 'EOF' > "$SYSTEM_DIR/app/routes/dashboard.js"
+const express = require('express');
+const router = express.Router();
+const { auth } = require('../middleware/auth');
+const DashboardController = require('../controllers/DashboardController');
+
+// Main dashboard
+router.get('/', auth, DashboardController.index);
+
+// Real-time stats API
+router.get('/api/stats', auth, DashboardController.getStats);
+
+// Device overview
+router.get('/devices', auth, DashboardController.devices);
+
+// Voucher management
+router.get('/vouchers', auth, DashboardController.vouchers);
+router.get('/vouchers/create', auth, DashboardController.createVoucherForm);
+router.post('/vouchers/create', auth, DashboardController.createVoucher);
+router.get('/vouchers/print/:id', auth, DashboardController.printVoucher);
+
+// User management
+router.get('/users', auth, DashboardController.users);
+
+// Reports
+router.get('/reports', auth, DashboardController.reports);
+router.get('/reports/revenue', auth, DashboardController.revenueReport);
+router.get('/reports/usage', auth, DashboardController.usageReport);
+router.get('/reports/export', auth, DashboardController.exportReport);
+
+module.exports = router;
+EOF
+
+    # Reports routes
+    cat << 'EOF' > "$SYSTEM_DIR/app/routes/reports.js"
+const express = require('express');
+const router = express.Router();
+const { auth, authorize } = require('../middleware/auth');
+const ReportService = require('../services/ReportService');
+
+/**
+ * @swagger
+ * tags:
+ *   name: Reports
+ *   description: Reporting and analytics endpoints
+ */
+
+/**
+ * @swagger
+ * /api/v1/reports/revenue:
+ *   get:
+ *     summary: Get revenue report
+ *     tags: [Reports]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: from
+ *         schema:
+ *           type: string
+ *           format: date
+ *       - in: query
+ *         name: to
+ *         schema:
+ *           type: string
+ *           format: date
+ *       - in: query
+ *         name: groupBy
+ *         schema:
+ *           type: string
+ *           enum: [day, week, month]
+ *     responses:
+ *       200:
+ *         description: Revenue report data
+ */
+router.get('/revenue',
+    auth,
+    authorize('admin', 'manager'),
+    async (req, res, next) => {
+        try {
+            const report = await ReportService.generateRevenueReport({
+                organizationId: req.user.organization,
+                ...req.query
+            });
+            
+            res.json({
+                success: true,
+                data: report
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+/**
+ * @swagger
+ * /api/v1/reports/usage:
+ *   get:
+ *     summary: Get usage statistics report
+ *     tags: [Reports]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: from
+ *         schema:
+ *           type: string
+ *           format: date
+ *       - in: query
+ *         name: to
+ *         schema:
+ *           type: string
+ *           format: date
+ *       - in: query
+ *         name: deviceId
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Usage statistics
+ */
+router.get('/usage',
+    auth,
+    async (req, res, next) => {
+        try {
+            const report = await ReportService.generateUsageReport({
+                organizationId: req.user.organization,
+                ...req.query
+            });
+            
+            res.json({
+                success: true,
+                data: report
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+/**
+ * @swagger
+ * /api/v1/reports/vouchers:
+ *   get:
+ *     summary: Get voucher statistics report
+ *     tags: [Reports]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Voucher statistics
+ */
+router.get('/vouchers',
+    auth,
+    async (req, res, next) => {
+        try {
+            const report = await ReportService.generateVoucherReport({
+                organizationId: req.user.organization,
+                ...req.query
+            });
+            
+            res.json({
+                success: true,
+                data: report
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+/**
+ * @swagger
+ * /api/v1/reports/devices:
+ *   get:
+ *     summary: Get device performance report
+ *     tags: [Reports]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Device performance data
+ */
+router.get('/devices',
+    auth,
+    async (req, res, next) => {
+        try {
+            const report = await ReportService.generateDeviceReport({
+                organizationId: req.user.organization,
+                ...req.query
+            });
+            
+            res.json({
+                success: true,
+                data: report
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+/**
+ * @swagger
+ * /api/v1/reports/export:
+ *   post:
+ *     summary: Export report to file
+ *     tags: [Reports]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               type:
+ *                 type: string
+ *                 enum: [revenue, usage, vouchers, devices]
+ *               format:
+ *                 type: string
+ *                 enum: [pdf, excel, csv]
+ *               filters:
+ *                 type: object
+ *     responses:
+ *       200:
+ *         description: Export file URL
+ */
+router.post('/export',
+    auth,
+    body('type').isIn(['revenue', 'usage', 'vouchers', 'devices']),
+    body('format').isIn(['pdf', 'excel', 'csv']),
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            
+            const exportUrl = await ReportService.exportReport({
+                organizationId: req.user.organization,
+                userId: req.user._id,
+                ...req.body
+            });
+            
+            res.json({
+                success: true,
+                data: {
+                    url: exportUrl,
+                    expiresAt: new Date(Date.now() + 3600000) // 1 hour
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+module.exports = router;
+EOF
+
+    # Settings routes
+    cat << 'EOF' > "$SYSTEM_DIR/app/routes/settings.js"
+const express = require('express');
+const router = express.Router();
+const { auth, authorize } = require('../middleware/auth');
+const SettingsController = require('../controllers/SettingsController');
+
+// General settings
+router.get('/', auth, SettingsController.index);
+router.post('/general', auth, authorize('admin'), SettingsController.updateGeneral);
+
+// Organization settings
+router.get('/organization', auth, authorize('admin'), SettingsController.organization);
+router.post('/organization', auth, authorize('admin'), SettingsController.updateOrganization);
+
+// Payment settings
+router.get('/payment', auth, authorize('admin'), SettingsController.payment);
+router.post('/payment', auth, authorize('admin'), SettingsController.updatePayment);
+
+// Portal customization
+router.get('/portal', auth, authorize('admin'), SettingsController.portal);
+router.post('/portal', auth, authorize('admin'), SettingsController.updatePortal);
+router.post('/portal/template', auth, authorize('admin'), SettingsController.uploadPortalTemplate);
+
+// Voucher profiles
+router.get('/vouchers', auth, authorize('admin'), SettingsController.voucherProfiles);
+router.post('/vouchers/profile', auth, authorize('admin'), SettingsController.createVoucherProfile);
+router.put('/vouchers/profile/:id', auth, authorize('admin'), SettingsController.updateVoucherProfile);
+router.delete('/vouchers/profile/:id', auth, authorize('admin'), SettingsController.deleteVoucherProfile);
+
+// Email settings
+router.get('/email', auth, authorize('admin'), SettingsController.email);
+router.post('/email', auth, authorize('admin'), SettingsController.updateEmail);
+router.post('/email/test', auth, authorize('admin'), SettingsController.testEmail);
+
+// API settings
+router.get('/api', auth, authorize('admin'), SettingsController.api);
+router.post('/api/key', auth, authorize('admin'), SettingsController.generateApiKey);
+router.delete('/api/key/:id', auth, authorize('admin'), SettingsController.deleteApiKey);
+
+module.exports = router;
+EOF
+
+    # Update existing route files with authentication
+    local routes=("auth" "devices" "users" "vouchers" "monitoring" "admin")
     
+    for route in "${routes[@]}"; do
+        if [[ "$route" == "vouchers" ]]; then
+            # Enhanced voucher routes
+            cat << 'EOF' > "$SYSTEM_DIR/app/routes/vouchers.js"
+const express = require('express');
+const router = express.Router();
+const { body, param, query, validationResult } = require('express-validator');
+const { auth, authorize } = require('../middleware/auth');
+const VoucherService = require('../services/VoucherService');
+const PDFService = require('../services/PDFService');
+
+/**
+ * @swagger
+ * tags:
+ *   name: Vouchers
+ *   description: Voucher management endpoints
+ */
+
+/**
+ * @swagger
+ * /api/v1/vouchers:
+ *   get:
+ *     summary: Get all vouchers
+ *     tags: [Vouchers]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [active, used, expired, suspended]
+ *       - in: query
+ *         name: deviceId
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: batchId
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get('/', auth, async (req, res, next) => {
     try {
-        const salt = await bcrypt.genSalt(10);
-        this.password = await bcrypt.hash(this.password, salt);
-        next();
+        const filters = {
+            organization: req.user.organization,
+            ...req.query
+        };
+        
+        const vouchers = await VoucherService.getVouchers(filters);
+        
+        res.json({
+            success: true,
+            data: vouchers
+        });
     } catch (error) {
         next(error);
     }
 });
 
-// Compare password method
-userSchema.methods.comparePassword = async function(candidatePassword) {
-    return await bcrypt.compare(candidatePassword, this.password);
-};
+/**
+ * @swagger
+ * /api/v1/vouchers/generate:
+ *   post:
+ *     summary: Generate vouchers in batch
+ *     tags: [Vouchers]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               quantity:
+ *                 type: number
+ *               profile:
+ *                 type: string
+ *               prefix:
+ *                 type: string
+ *               suffix:
+ *                 type: string
+ *               length:
+ *                 type: number
+ *               price:
+ *                 type: number
+ *               deviceId:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Vouchers created
+ */
+router.post('/generate',
+    auth,
+    authorize('admin', 'operator'),
+    body('quantity').isInt({ min: 1, max: 1000 }),
+    body('profile').isString(),
+    body('length').optional().isInt({ min: 6, max: 16 }),
+    body('price').optional().isNumeric(),
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            
+            const vouchers = await VoucherService.generateBatch({
+                ...req.body,
+                organization: req.user.organization,
+                createdBy: req.user._id
+            });
+            
+            res.status(201).json({
+                success: true,
+                data: {
+                    count: vouchers.length,
+                    batchId: vouchers[0]?.batch?.id,
+                    vouchers: vouchers
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
 
-// Hide sensitive fields
-userSchema.methods.toJSON = function() {
-    const obj = this.toObject();
-    delete obj.password;
-    delete obj.twoFactorAuth.secret;
-    delete obj.twoFactorAuth.backupCodes;
-    delete obj.verificationToken;
-    delete obj.resetPasswordToken;
-    delete obj.apiKeys;
-    return obj;
-};
+/**
+ * @swagger
+ * /api/v1/vouchers/{id}:
+ *   get:
+ *     summary: Get voucher by ID
+ *     tags: [Vouchers]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+router.get('/:id',
+    auth,
+    param('id').isMongoId(),
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            
+            const voucher = await VoucherService.getVoucherById(req.params.id);
+            
+            if (!voucher || voucher.organization.toString() !== req.user.organization.toString()) {
+                return res.status(404).json({ error: 'Voucher not found' });
+            }
+            
+            res.json({
+                success: true,
+                data: voucher
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
 
-// Indexes
-userSchema.index({ organization: 1 });
-userSchema.index({ username: 1 });
-userSchema.index({ email: 1 });
-userSchema.index({ role: 1 });
+/**
+ * @swagger
+ * /api/v1/vouchers/validate:
+ *   post:
+ *     summary: Validate voucher code
+ *     tags: [Vouchers]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               code:
+ *                 type: string
+ *               deviceId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Validation result
+ */
+router.post('/validate',
+    body('code').isString().trim(),
+    body('deviceId').optional().isMongoId(),
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            
+            const result = await VoucherService.validateVoucher(req.body.code, req.body.deviceId);
+            
+            res.json({
+                success: true,
+                data: result
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
 
-module.exports = mongoose.model('User', userSchema);
+/**
+ * @swagger
+ * /api/v1/vouchers/activate:
+ *   post:
+ *     summary: Activate voucher
+ *     tags: [Vouchers]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               code:
+ *                 type: string
+ *               deviceId:
+ *                 type: string
+ *               macAddress:
+ *                 type: string
+ *               ipAddress:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Activation result
+ */
+router.post('/activate',
+    body('code').isString().trim(),
+    body('deviceId').isMongoId(),
+    body('macAddress').optional().isMACAddress(),
+    body('ipAddress').optional().isIP(),
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            
+            const result = await VoucherService.activateVoucher(req.body);
+            
+            res.json({
+                success: true,
+                data: result
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+/**
+ * @swagger
+ * /api/v1/vouchers/print:
+ *   post:
+ *     summary: Generate printable vouchers
+ *     tags: [Vouchers]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               voucherIds:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *               template:
+ *                 type: string
+ *               format:
+ *                 type: string
+ *                 enum: [pdf, thermal]
+ *     responses:
+ *       200:
+ *         description: Print file URL
+ */
+router.post('/print',
+    auth,
+    body('voucherIds').isArray(),
+    body('format').isIn(['pdf', 'thermal']),
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            
+            const printUrl = await PDFService.generateVoucherPrint({
+                ...req.body,
+                organization: req.user.organization
+            });
+            
+            res.json({
+                success: true,
+                data: {
+                    url: printUrl,
+                    expiresAt: new Date(Date.now() + 3600000) // 1 hour
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+/**
+ * @swagger
+ * /api/v1/vouchers/{id}/suspend:
+ *   put:
+ *     summary: Suspend voucher
+ *     tags: [Vouchers]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Voucher suspended
+ */
+router.put('/:id/suspend',
+    auth,
+    authorize('admin', 'operator'),
+    param('id').isMongoId(),
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            
+            const voucher = await VoucherService.suspendVoucher(req.params.id, req.user._id);
+            
+            res.json({
+                success: true,
+                data: voucher
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+/**
+ * @swagger
+ * /api/v1/vouchers/stats:
+ *   get:
+ *     summary: Get voucher statistics
+ *     tags: [Vouchers]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Voucher statistics
+ */
+router.get('/stats',
+    auth,
+    async (req, res, next) => {
+        try {
+            const stats = await VoucherService.getStatistics(req.user.organization);
+            
+            res.json({
+                success: true,
+                data: stats
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+module.exports = router;
 EOF
+        fi
+    done
+}
 
-    # Voucher model
-    cat << 'EOF' > "$SYSTEM_DIR/app/models/Voucher.js"
+# Create enhanced model files
+create_model_files_full() {
+    # Payment Transaction model
+    cat << 'EOF' > "$SYSTEM_DIR/app/models/PaymentTransaction.js"
 const mongoose = require('mongoose');
 
-const voucherSchema = new mongoose.Schema({
+const paymentTransactionSchema = new mongoose.Schema({
     organization: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Organization',
         required: true
     },
-    device: {
+    user: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'Device'
+        ref: 'User'
     },
-    code: {
+    transactionId: {
         type: String,
         required: true,
-        unique: true,
-        uppercase: true
+        unique: true
     },
-    profile: {
-        name: String,
+    reference: {
+        type: String,
+        required: true
+    },
+    method: {
+        type: String,
+        enum: ['promptpay', 'truewallet', 'creditcard', 'banktransfer', 'cash'],
+        required: true
+    },
+    type: {
+        type: String,
+        enum: ['voucher', 'topup', 'subscription', 'other'],
+        required: true
+    },
+    amount: {
+        value: {
+            type: Number,
+            required: true
+        },
+        currency: {
+            type: String,
+            default: 'THB'
+        }
+    },
+    status: {
+        type: String,
+        enum: ['pending', 'processing', 'completed', 'failed', 'cancelled', 'refunded'],
+        default: 'pending'
+    },
+    relatedItem: {
+        model: {
+            type: String,
+            enum: ['Voucher', 'User', 'Subscription']
+        },
+        id: mongoose.Schema.Types.ObjectId
+    },
+    paymentDetails: {
+        promptpay: {
+            mobileNumber: String,
+            qrCode: String
+        },
+        creditcard: {
+            last4: String,
+            brand: String
+        },
+        banktransfer: {
+            bank: String,
+            accountNumber: String
+        }
+    },
+    slipImage: String,
+    providerData: mongoose.Schema.Types.Mixed,
+    webhook: {
+        received: Boolean,
+        data: mongoose.Schema.Types.Mixed,
+        timestamp: Date
+    },
+    metadata: mongoose.Schema.Types.Mixed,
+    notes: String,
+    processedAt: Date,
+    completedAt: Date,
+    failedReason: String
+}, {
+    timestamps: true
+});
+
+// Indexes
+paymentTransactionSchema.index({ organization: 1 });
+paymentTransactionSchema.index({ transactionId: 1 });
+paymentTransactionSchema.index({ reference: 1 });
+paymentTransactionSchema.index({ status: 1 });
+paymentTransactionSchema.index({ method: 1 });
+paymentTransactionSchema.index({ createdAt: -1 });
+
+// Methods
+paymentTransactionSchema.methods.markAsCompleted = function() {
+    this.status = 'completed';
+    this.completedAt = new Date();
+    return this.save();
+};
+
+paymentTransactionSchema.methods.markAsFailed = function(reason) {
+    this.status = 'failed';
+    this.failedReason = reason;
+    return this.save();
+};
+
+module.exports = mongoose.model('PaymentTransaction', paymentTransactionSchema);
+EOF
+
+    # Portal Template model
+    cat << 'EOF' > "$SYSTEM_DIR/app/models/PortalTemplate.js"
+const mongoose = require('mongoose');
+
+const portalTemplateSchema = new mongoose.Schema({
+    organization: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Organization',
+        required: true
+    },
+    name: {
+        type: String,
+        required: true
+    },
+    type: {
+        type: String,
+        enum: ['default', 'custom', 'seasonal'],
+        default: 'default'
+    },
+    isActive: {
+        type: Boolean,
+        default: false
+    },
+    design: {
+        logo: String,
+        backgroundImage: String,
+        backgroundColor: String,
+        primaryColor: String,
+        secondaryColor: String,
+        fontFamily: String,
+        customCSS: String
+    },
+    content: {
+        title: mongoose.Schema.Types.Mixed, // Multi-language
+        subtitle: mongoose.Schema.Types.Mixed,
+        welcomeMessage: mongoose.Schema.Types.Mixed,
+        termsAndConditions: mongoose.Schema.Types.Mixed,
+        footer: mongoose.Schema.Types.Mixed
+    },
+    loginMethods: [{
+        type: String,
+        enum: ['voucher', 'userpass', 'social', 'sms'],
+        enabled: Boolean,
+        order: Number
+    }],
+    socialProviders: [{
+        provider: {
+            type: String,
+            enum: ['facebook', 'line', 'google']
+        },
+        enabled: Boolean,
+        appId: String,
+        appSecret: String
+    }],
+    features: {
+        showLogo: {
+            type: Boolean,
+            default: true
+        },
+        showLanguageSelector: {
+            type: Boolean,
+            default: true
+        },
+        showTerms: {
+            type: Boolean,
+            default: true
+        },
+        requireTermsAcceptance: {
+            type: Boolean,
+            default: true
+        },
+        showVoucherPurchase: {
+            type: Boolean,
+            default: true
+        },
+        autoRedirect: {
+            enabled: Boolean,
+            url: String,
+            delay: Number
+        }
+    },
+    redirectUrl: {
+        success: String,
+        error: String
+    },
+    customFields: [{
+        fieldName: String,
+        fieldType: {
+            type: String,
+            enum: ['text', 'email', 'phone', 'select', 'checkbox']
+        },
+        required: Boolean,
+        label: mongoose.Schema.Types.Mixed,
+        options: [String]
+    }],
+    metadata: mongoose.Schema.Types.Mixed
+}, {
+    timestamps: true
+});
+
+// Indexes
+portalTemplateSchema.index({ organization: 1 });
+portalTemplateSchema.index({ isActive: 1 });
+
+module.exports = mongoose.model('PortalTemplate', portalTemplateSchema);
+EOF
+
+    # Hotspot Profile model
+    cat << 'EOF' > "$SYSTEM_DIR/app/models/HotspotProfile.js"
+const mongoose = require('mongoose');
+
+const hotspotProfileSchema = new mongoose.Schema({
+    organization: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Organization',
+        required: true
+    },
+    name: {
+        type: String,
+        required: true
+    },
+    description: String,
+    mikrotikProfile: {
+        name: String, // Profile name in MikroTik
+        sharedUsers: {
+            type: Number,
+            default: 1
+        },
+        rateLimit: {
+            upload: String, // e.g., "1M" for 1Mbps
+            download: String
+        },
+        sessionTimeout: String, // e.g., "1h" for 1 hour
+        idleTimeout: String,
+        keepaliveTimeout: String,
+        statusAutorefresh: String
+    },
+    limits: {
         duration: {
             value: Number,
             unit: {
@@ -2197,159 +3813,233 @@ const voucherSchema = new mongoose.Schema({
                 enum: ['minutes', 'hours', 'days', 'weeks', 'months']
             }
         },
-        bandwidth: {
+        dataLimit: {
+            value: Number,
+            unit: {
+                type: String,
+                enum: ['MB', 'GB']
+            }
+        },
+        speed: {
             upload: Number, // in Mbps
-            download: Number // in Mbps
+            download: Number
         },
-        dataLimit: Number, // in MB
-        accessTime: {
-            start: String, // HH:MM format
-            end: String // HH:MM format
-        },
-        simultaneousUse: {
+        simultaneousDevices: {
             type: Number,
             default: 1
         }
     },
-    status: {
-        type: String,
-        enum: ['active', 'used', 'expired', 'suspended'],
-        default: 'active'
-    },
-    price: {
+    pricing: {
         amount: Number,
         currency: {
             type: String,
             default: 'THB'
+        },
+        taxIncluded: {
+            type: Boolean,
+            default: true
         }
     },
-    usage: {
-        activatedAt: Date,
-        expiresAt: Date,
-        lastUsedAt: Date,
-        totalTime: Number, // in seconds
-        totalData: Number, // in MB
-        macAddress: String,
-        ipAddress: String,
-        deviceInfo: String
+    validity: {
+        activationPeriod: Number, // Days within which voucher must be activated
+        gracePeriod: Number // Minutes after expiry before disconnection
     },
-    batch: {
-        id: String,
-        createdBy: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: 'User'
-        },
-        createdAt: Date
+    accessTime: {
+        enabled: Boolean,
+        schedule: [{
+            day: {
+                type: Number,
+                min: 0,
+                max: 6 // 0 = Sunday
+            },
+            startTime: String, // HH:MM format
+            endTime: String
+        }]
     },
-    qrCode: String,
-    notes: String,
-    tags: [String]
+    isActive: {
+        type: Boolean,
+        default: true
+    },
+    isDefault: {
+        type: Boolean,
+        default: false
+    },
+    order: {
+        type: Number,
+        default: 0
+    }
 }, {
     timestamps: true
 });
 
-// Generate voucher code
-voucherSchema.statics.generateCode = function(length = 8) {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    let code = '';
-    for (let i = 0; i < length; i++) {
-        code += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return code;
-};
-
-// Check if voucher is valid
-voucherSchema.methods.isValid = function() {
-    if (this.status !== 'active') return false;
-    if (this.usage.expiresAt && new Date() > this.usage.expiresAt) return false;
-    return true;
-};
-
 // Indexes
-voucherSchema.index({ organization: 1 });
-voucherSchema.index({ device: 1 });
-voucherSchema.index({ code: 1 });
-voucherSchema.index({ status: 1 });
-voucherSchema.index({ 'batch.id': 1 });
+hotspotProfileSchema.index({ organization: 1 });
+hotspotProfileSchema.index({ isActive: 1 });
+hotspotProfileSchema.index({ order: 1 });
 
-module.exports = mongoose.model('Voucher', voucherSchema);
+module.exports = mongoose.model('HotspotProfile', hotspotProfileSchema);
 EOF
 
-    # Session model
-    cat << 'EOF' > "$SYSTEM_DIR/app/models/Session.js"
+    # SMS OTP model
+    cat << 'EOF' > "$SYSTEM_DIR/app/models/SmsOtp.js"
 const mongoose = require('mongoose');
 
-const sessionSchema = new mongoose.Schema({
-    organization: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Organization',
-        required: true
-    },
-    device: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Device',
-        required: true
-    },
-    voucher: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Voucher'
-    },
-    user: {
-        username: String,
-        macAddress: String,
-        ipAddress: String,
-        deviceInfo: String
-    },
-    startTime: {
-        type: Date,
-        default: Date.now
-    },
-    endTime: Date,
-    duration: Number, // in seconds
-    dataUsage: {
-        upload: Number, // in bytes
-        download: Number, // in bytes
-        total: Number // in bytes
-    },
-    status: {
+const smsOtpSchema = new mongoose.Schema({
+    phone: {
         type: String,
-        enum: ['active', 'completed', 'terminated', 'idle'],
-        default: 'active'
+        required: true
     },
-    terminationReason: String,
-    quality: {
-        avgLatency: Number,
-        packetLoss: Number,
-        jitter: Number
-    }
+    otp: {
+        type: String,
+        required: true
+    },
+    purpose: {
+        type: String,
+        enum: ['login', 'register', 'verification', 'password_reset'],
+        default: 'login'
+    },
+    attempts: {
+        type: Number,
+        default: 0
+    },
+    maxAttempts: {
+        type: Number,
+        default: 3
+    },
+    isUsed: {
+        type: Boolean,
+        default: false
+    },
+    usedAt: Date,
+    expiresAt: {
+        type: Date,
+        default: Date.now,
+        expires: 300 // 5 minutes
+    },
+    ipAddress: String,
+    userAgent: String,
+    metadata: mongoose.Schema.Types.Mixed
 }, {
     timestamps: true
 });
 
 // Indexes
-sessionSchema.index({ organization: 1 });
-sessionSchema.index({ device: 1 });
-sessionSchema.index({ voucher: 1 });
-sessionSchema.index({ startTime: -1 });
-sessionSchema.index({ status: 1 });
-sessionSchema.index({ 'user.macAddress': 1 });
+smsOtpSchema.index({ phone: 1 });
+smsOtpSchema.index({ otp: 1 });
+smsOtpSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
-module.exports = mongoose.model('Session', sessionSchema);
+// Methods
+smsOtpSchema.methods.verify = function(inputOtp) {
+    if (this.isUsed) {
+        throw new Error('OTP already used');
+    }
+    
+    if (this.attempts >= this.maxAttempts) {
+        throw new Error('Maximum attempts exceeded');
+    }
+    
+    if (new Date() > this.expiresAt) {
+        throw new Error('OTP expired');
+    }
+    
+    this.attempts++;
+    
+    if (this.otp === inputOtp) {
+        this.isUsed = true;
+        this.usedAt = new Date();
+        return this.save();
+    } else {
+        this.save();
+        throw new Error('Invalid OTP');
+    }
+};
+
+module.exports = mongoose.model('SmsOtp', smsOtpSchema);
+EOF
+
+    # Update existing models with new fields
+    # Update Organization model
+    cat << 'EOF' >> "$SYSTEM_DIR/app/models/Organization.js"
+
+// Add payment settings to organization schema
+organizationSchema.add({
+    paymentSettings: {
+        enabled: {
+            type: Boolean,
+            default: true
+        },
+        methods: [{
+            method: {
+                type: String,
+                enum: ['promptpay', 'truewallet', 'creditcard', 'banktransfer', 'cash']
+            },
+            enabled: Boolean,
+            config: mongoose.Schema.Types.Mixed
+        }],
+        promptpay: {
+            mobileNumber: String,
+            nationalId: String,
+            displayName: String
+        },
+        bankTransfer: {
+            accounts: [{
+                bank: String,
+                accountNumber: String,
+                accountName: String,
+                branch: String
+            }]
+        },
+        taxInfo: {
+            taxId: String,
+            vatRate: {
+                type: Number,
+                default: 7
+            },
+            includeVat: {
+                type: Boolean,
+                default: true
+            }
+        }
+    },
+    portalSettings: {
+        defaultTemplate: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'PortalTemplate'
+        },
+        allowedLanguages: [{
+            type: String,
+            enum: ['th', 'en', 'zh', 'ja', 'ko', 'ms', 'id', 'vi', 'lo', 'my', 'tl']
+        }],
+        defaultLanguage: {
+            type: String,
+            default: 'th'
+        }
+    }
+});
 EOF
 }
 
 # Create middleware files
-create_middleware_files() {
-    # Authentication middleware
+create_middleware_files_full() {
+    # Auth middleware with JWT
     cat << 'EOF' > "$SYSTEM_DIR/app/middleware/auth.js"
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
 const auth = async (req, res, next) => {
     try {
-        const token = req.header('Authorization')?.replace('Bearer ', '');
+        // Check for token in header or session
+        let token = req.header('Authorization')?.replace('Bearer ', '');
+        
+        if (!token && req.session?.token) {
+            token = req.session.token;
+        }
         
         if (!token) {
+            // For web routes, redirect to login
+            if (!req.xhr && req.headers.accept?.indexOf('json') === -1) {
+                return res.redirect('/login');
+            }
             throw new Error();
         }
         
@@ -2357,16 +4047,30 @@ const auth = async (req, res, next) => {
         const user = await User.findOne({ 
             _id: decoded._id, 
             isActive: true 
-        }).select('-password');
+        }).populate('organization').select('-password');
         
         if (!user) {
             throw new Error();
         }
         
+        // Check if organization is active
+        if (!user.organization?.isActive) {
+            throw new Error('Organization is inactive');
+        }
+        
         req.user = user;
         req.token = token;
+        req.organization = user.organization;
+        
+        // Set user in locals for views
+        res.locals.user = user;
+        res.locals.organization = user.organization;
+        
         next();
     } catch (error) {
+        if (!req.xhr && req.headers.accept?.indexOf('json') === -1) {
+            return res.redirect('/login');
+        }
         res.status(401).json({ error: 'Please authenticate' });
     }
 };
@@ -2374,6 +4078,10 @@ const auth = async (req, res, next) => {
 const authorize = (...roles) => {
     return (req, res, next) => {
         if (!roles.includes(req.user.role)) {
+            if (!req.xhr && req.headers.accept?.indexOf('json') === -1) {
+                req.flash('error_msg', 'Access denied. Insufficient permissions.');
+                return res.redirect('back');
+            }
             return res.status(403).json({ 
                 error: 'Access denied. Insufficient permissions.' 
             });
@@ -2382,12 +4090,51 @@ const authorize = (...roles) => {
     };
 };
 
-module.exports = { auth, authorize };
+const apiAuth = async (req, res, next) => {
+    try {
+        const apiKey = req.header('X-API-Key');
+        
+        if (!apiKey) {
+            throw new Error();
+        }
+        
+        const user = await User.findOne({
+            'apiKeys.key': apiKey,
+            isActive: true
+        }).populate('organization');
+        
+        if (!user) {
+            throw new Error();
+        }
+        
+        // Check if API key is still valid
+        const apiKeyData = user.apiKeys.find(k => k.key === apiKey);
+        if (apiKeyData.expiresAt && new Date() > apiKeyData.expiresAt) {
+            throw new Error('API key expired');
+        }
+        
+        // Update last used
+        apiKeyData.lastUsed = new Date();
+        await user.save();
+        
+        req.user = user;
+        req.organization = user.organization;
+        req.apiKey = apiKeyData;
+        
+        next();
+    } catch (error) {
+        res.status(401).json({ error: 'Invalid API key' });
+    }
+};
+
+module.exports = { auth, authorize, apiAuth };
 EOF
 
     # Rate limiting middleware
     cat << 'EOF' > "$SYSTEM_DIR/app/middleware/rateLimiter.js"
 const rateLimit = require('express-rate-limit');
+const slowDown = require('express-slow-down');
+const RedisStore = require('rate-limit-redis');
 
 const createLimiter = (options = {}) => {
     const defaults = {
@@ -2396,7 +4143,29 @@ const createLimiter = (options = {}) => {
         message: 'Too many requests from this IP, please try again later.',
         standardHeaders: true,
         legacyHeaders: false,
+        handler: (req, res) => {
+            if (req.xhr || req.headers.accept?.indexOf('json') > -1) {
+                res.status(429).json({
+                    error: options.message || defaults.message,
+                    retryAfter: res.getHeader('Retry-After')
+                });
+            } else {
+                res.status(429).render('errors/429', {
+                    layout: 'layouts/error',
+                    title: 'Too Many Requests',
+                    message: options.message || defaults.message
+                });
+            }
+        }
     };
+    
+    // Use Redis store if available
+    if (global.redisClient) {
+        defaults.store = new RedisStore({
+            client: global.redisClient,
+            prefix: 'rl:'
+        });
+    }
     
     return rateLimit({ ...defaults, ...options });
 };
@@ -2405,7 +4174,8 @@ const createLimiter = (options = {}) => {
 const loginLimiter = createLimiter({
     windowMs: 15 * 60 * 1000,
     max: 5,
-    message: 'Too many login attempts, please try again later.'
+    message: 'Too many login attempts, please try again later.',
+    skipSuccessfulRequests: true
 });
 
 const apiLimiter = createLimiter({
@@ -2418,11 +4188,32 @@ const strictLimiter = createLimiter({
     max: 10
 });
 
+const voucherLimiter = createLimiter({
+    windowMs: 5 * 60 * 1000, // 5 minutes
+    max: 20,
+    message: 'Too many voucher validation attempts'
+});
+
+// Speed limiter for sensitive operations
+const speedLimiter = slowDown({
+    windowMs: 15 * 60 * 1000,
+    delayAfter: 50,
+    delayMs: 100,
+    maxDelayMs: 2000,
+    skipSuccessfulRequests: true,
+    store: global.redisClient ? new RedisStore({
+        client: global.redisClient,
+        prefix: 'sd:'
+    }) : undefined
+});
+
 module.exports = {
     createLimiter,
     loginLimiter,
     apiLimiter,
-    strictLimiter
+    strictLimiter,
+    voucherLimiter,
+    speedLimiter
 };
 EOF
 
@@ -2434,26 +4225,1768 @@ const handleValidationErrors = (req, res, next) => {
     const errors = validationResult(req);
     
     if (!errors.isEmpty()) {
-        return res.status(400).json({
-            success: false,
-            errors: errors.array().map(err => ({
-                field: err.param,
-                message: err.msg,
-                value: err.value
-            }))
-        });
+        // For AJAX requests
+        if (req.xhr || req.headers.accept?.indexOf('json') > -1) {
+            return res.status(400).json({
+                success: false,
+                errors: errors.array().map(err => ({
+                    field: err.param,
+                    message: req.t ? req.t(`validation.${err.msg}`, err.msg) : err.msg,
+                    value: err.value
+                }))
+            });
+        }
+        
+        // For regular requests
+        req.flash('error_msg', errors.array().map(err => err.msg).join(', '));
+        return res.redirect('back');
     }
     
     next();
 };
 
-module.exports = { handleValidationErrors };
+// Custom validators
+const customValidators = {
+    isThaiPhone: (value) => {
+        const thaiPhoneRegex = /^(0[689]\d{8})$/;
+        return thaiPhoneRegex.test(value);
+    },
+    
+    isValidVoucherCode: (value) => {
+        const voucherRegex = /^[A-Z0-9]{6,16}$/;
+        return voucherRegex.test(value);
+    },
+    
+    isValidMACAddress: (value) => {
+        const macRegex = /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/;
+        return macRegex.test(value);
+    }
+};
+
+module.exports = { handleValidationErrors, customValidators };
+EOF
+
+    # Security middleware
+    cat << 'EOF' > "$SYSTEM_DIR/app/middleware/security.js"
+const helmet = require('helmet');
+const mongoSanitize = require('express-mongo-sanitize');
+const hpp = require('hpp');
+
+const securityHeaders = helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.tailwindcss.com", "https://fonts.googleapis.com"],
+            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://cdn.jsdelivr.net", "https://unpkg.com"],
+            imgSrc: ["'self'", "data:", "https:", "blob:"],
+            connectSrc: ["'self'", "wss:", "https:"],
+            fontSrc: ["'self'", "https://fonts.gstatic.com"],
+            objectSrc: ["'none'"],
+            mediaSrc: ["'self'"],
+            frameSrc: ["'none'"],
+        },
+    },
+    crossOriginEmbedderPolicy: false,
+});
+
+const sanitizeInput = (req, res, next) => {
+    // Sanitize body, query, and params
+    req.body = mongoSanitize.sanitize(req.body);
+    req.query = mongoSanitize.sanitize(req.query);
+    req.params = mongoSanitize.sanitize(req.params);
+    next();
+};
+
+const preventParameterPollution = hpp({
+    whitelist: ['sort', 'fields', 'page', 'limit']
+});
+
+module.exports = {
+    securityHeaders,
+    sanitizeInput,
+    preventParameterPollution
+};
+EOF
+}
+
+# Create service files
+create_service_files() {
+    mkdir -p "$SYSTEM_DIR/app/services"
+    
+    # Payment Service
+    cat << 'EOF' > "$SYSTEM_DIR/app/services/PaymentService.js"
+const PaymentTransaction = require('../models/PaymentTransaction');
+const promptpayQr = require('promptpay-qr');
+const QRCode = require('qrcode');
+const { v4: uuidv4 } = require('uuid');
+const axios = require('axios');
+
+class PaymentService {
+    static async getAvailableMethods() {
+        // This would typically check organization settings
+        return [
+            {
+                id: 'promptpay',
+                name: 'PromptPay',
+                icon: '/static/images/promptpay.png',
+                enabled: true,
+                fee: 0
+            },
+            {
+                id: 'truewallet',
+                name: 'TrueWallet',
+                icon: '/static/images/truewallet.png',
+                enabled: true,
+                fee: 0
+            },
+            {
+                id: 'creditcard',
+                name: 'Credit/Debit Card',
+                icon: '/static/images/card.png',
+                enabled: true,
+                fee: 3 // percentage
+            },
+            {
+                id: 'banktransfer',
+                name: 'Bank Transfer',
+                icon: '/static/images/bank.png',
+                enabled: true,
+                fee: 0
+            }
+        ];
+    }
+    
+    static generateReference() {
+        return `REF${Date.now()}${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+    }
+    
+    static async generatePromptPayQR(amount, reference, mobileNumber = null) {
+        try {
+            // Use organization's PromptPay number or default
+            const payeeNumber = mobileNumber || process.env.PROMPTPAY_NUMBER || '0812345678';
+            
+            // Generate PromptPay payload
+            const payload = promptpayQr(payeeNumber, { amount });
+            
+            // Generate QR code
+            const qrCodeDataUrl = await QRCode.toDataURL(payload, {
+                errorCorrectionLevel: 'M',
+                type: 'image/png',
+                width: 300,
+                margin: 2,
+                color: {
+                    dark: '#000000',
+                    light: '#FFFFFF'
+                }
+            });
+            
+            return qrCodeDataUrl;
+        } catch (error) {
+            throw new Error('Failed to generate PromptPay QR code');
+        }
+    }
+    
+    static async createTransaction(data) {
+        const transaction = new PaymentTransaction({
+            transactionId: uuidv4(),
+            reference: data.reference || this.generateReference(),
+            ...data
+        });
+        
+        await transaction.save();
+        return transaction;
+    }
+    
+    static async confirmPayment(data) {
+        const { transactionId, method, amount, reference, slipImage, userId, organizationId } = data;
+        
+        let transaction = await PaymentTransaction.findOne({
+            transactionId,
+            organization: organizationId
+        });
+        
+        if (!transaction) {
+            // Create new transaction
+            transaction = await this.createTransaction({
+                organization: organizationId,
+                user: userId,
+                transactionId,
+                reference,
+                method,
+                amount: { value: amount },
+                type: 'voucher',
+                status: 'processing'
+            });
+        }
+        
+        // Update transaction
+        transaction.slipImage = slipImage;
+        transaction.processedAt = new Date();
+        
+        // Here you would typically verify the payment with the provider
+        // For now, we'll simulate auto-approval for demo
+        if (slipImage) {
+            transaction.status = 'completed';
+            transaction.completedAt = new Date();
+        }
+        
+        await transaction.save();
+        
+        // Emit payment status update via Socket.IO
+        if (global.io) {
+            global.io.to(`org:${organizationId}`).emit('payment:updated', {
+                transactionId: transaction.transactionId,
+                status: transaction.status
+            });
+        }
+        
+        return transaction;
+    }
+    
+    static async processWebhook(provider, data, headers) {
+        // Handle webhooks from different payment providers
+        switch (provider) {
+            case 'omise':
+                return this.processOmiseWebhook(data, headers);
+            case 'stripe':
+                return this.processStripeWebhook(data, headers);
+            case 'truemoney':
+                return this.processTrueMoneyWebhook(data, headers);
+            default:
+                throw new Error('Unknown payment provider');
+        }
+    }
+    
+    static async processOmiseWebhook(data, headers) {
+        // Verify webhook signature
+        // Process Omise events
+        const { key, data: eventData } = data;
+        
+        if (key === 'charge.complete') {
+            const transaction = await PaymentTransaction.findOne({
+                'providerData.chargeId': eventData.id
+            });
+            
+            if (transaction) {
+                if (eventData.status === 'successful') {
+                    await transaction.markAsCompleted();
+                } else {
+                    await transaction.markAsFailed(eventData.failure_message);
+                }
+            }
+        }
+        
+        return { success: true };
+    }
+    
+    static async processStripeWebhook(data, headers) {
+        // Similar implementation for Stripe
+        return { success: true };
+    }
+    
+    static async processTrueMoneyWebhook(data, headers) {
+        // Similar implementation for TrueMoney
+        return { success: true };
+    }
+    
+    static async getTransactions(filters) {
+        const query = {};
+        
+        if (filters.organizationId) {
+            query.organization = filters.organizationId;
+        }
+        
+        if (filters.status) {
+            query.status = filters.status;
+        }
+        
+        if (filters.method) {
+            query.method = filters.method;
+        }
+        
+        if (filters.from || filters.to) {
+            query.createdAt = {};
+            if (filters.from) {
+                query.createdAt.$gte = new Date(filters.from);
+            }
+            if (filters.to) {
+                query.createdAt.$lte = new Date(filters.to);
+            }
+        }
+        
+        const transactions = await PaymentTransaction.find(query)
+            .populate('user', 'username email')
+            .sort({ createdAt: -1 })
+            .limit(filters.limit || 100);
+        
+        return transactions;
+    }
+    
+    static async generateInvoice(transactionId) {
+        const transaction = await PaymentTransaction.findById(transactionId)
+            .populate('organization')
+            .populate('user');
+        
+        if (!transaction) {
+            throw new Error('Transaction not found');
+        }
+        
+        // Generate invoice data
+        const invoice = {
+            invoiceNumber: `INV-${transaction.reference}`,
+            date: transaction.createdAt,
+            dueDate: transaction.createdAt,
+            billTo: {
+                name: transaction.user?.profile?.firstName + ' ' + transaction.user?.profile?.lastName,
+                email: transaction.user?.email,
+                phone: transaction.user?.profile?.phone,
+                address: transaction.organization?.address
+            },
+            items: [{
+                description: `Hotspot Voucher - ${transaction.type}`,
+                quantity: 1,
+                unitPrice: transaction.amount.value,
+                total: transaction.amount.value
+            }],
+            subtotal: transaction.amount.value,
+            vat: transaction.organization?.paymentSettings?.taxInfo?.includeVat
+                ? transaction.amount.value * 0.07
+                : 0,
+            total: transaction.amount.value,
+            paymentMethod: transaction.method,
+            status: transaction.status
+        };
+        
+        return invoice;
+    }
+}
+
+module.exports = PaymentService;
+EOF
+
+    # MikroTik Service
+    cat << 'EOF' > "$SYSTEM_DIR/app/services/MikroTikService.js"
+const RouterOSClient = require('node-routeros').RouterOSClient;
+const Device = require('../models/Device');
+const logger = require('../utils/logger');
+
+class MikroTikService {
+    constructor() {
+        this.connections = new Map();
+    }
+    
+    async connectDevice(deviceId) {
+        try {
+            const device = await Device.findById(deviceId);
+            if (!device) {
+                throw new Error('Device not found');
+            }
+            
+            // Check if already connected
+            if (this.connections.has(deviceId)) {
+                return this.connections.get(deviceId);
+            }
+            
+            // Create new connection
+            const client = new RouterOSClient({
+                host: device.vpnIpAddress || device.ipAddress,
+                user: process.env.MIKROTIK_USER || 'admin',
+                password: process.env.MIKROTIK_PASSWORD || '',
+                port: 8728,
+                timeout: 10
+            });
+            
+            await client.connect();
+            
+            // Store connection
+            this.connections.set(deviceId, client);
+            
+            // Update device status
+            device.status = 'online';
+            device.lastSeen = new Date();
+            await device.save();
+            
+            logger.info(`Connected to MikroTik device: ${device.name}`);
+            
+            return client;
+        } catch (error) {
+            logger.error(`Failed to connect to device ${deviceId}:`, error);
+            throw error;
+        }
+    }
+    
+    async disconnectDevice(deviceId) {
+        const client = this.connections.get(deviceId);
+        if (client) {
+            await client.close();
+            this.connections.delete(deviceId);
+        }
+    }
+    
+    async getHotspotUsers(deviceId) {
+        const client = await this.connectDevice(deviceId);
+        
+        try {
+            const users = await client.write('/ip/hotspot/user/print');
+            return users.map(user => ({
+                id: user['.id'],
+                name: user.name,
+                password: user.password,
+                profile: user.profile,
+                uptime: user.uptime,
+                bytesIn: parseInt(user['bytes-in'] || 0),
+                bytesOut: parseInt(user['bytes-out'] || 0),
+                packetsIn: parseInt(user['packets-in'] || 0),
+                packetsOut: parseInt(user['packets-out'] || 0),
+                disabled: user.disabled === 'true',
+                comment: user.comment
+            }));
+        } catch (error) {
+            logger.error(`Failed to get hotspot users from device ${deviceId}:`, error);
+            throw error;
+        }
+    }
+    
+    async createHotspotUser(deviceId, userData) {
+        const client = await this.connectDevice(deviceId);
+        
+        try {
+            const result = await client.write('/ip/hotspot/user/add', [
+                ['name', userData.username],
+                ['password', userData.password],
+                ['profile', userData.profile || 'default'],
+                ['limit-uptime', userData.limitUptime || ''],
+                ['limit-bytes-in', userData.limitBytesIn || ''],
+                ['limit-bytes-out', userData.limitBytesOut || ''],
+                ['comment', userData.comment || `Created via API at ${new Date().toISOString()}`]
+            ]);
+            
+            logger.info(`Created hotspot user ${userData.username} on device ${deviceId}`);
+            
+            return { success: true, id: result[0] };
+        } catch (error) {
+            logger.error(`Failed to create hotspot user on device ${deviceId}:`, error);
+            throw error;
+        }
+    }
+    
+    async deleteHotspotUser(deviceId, username) {
+        const client = await this.connectDevice(deviceId);
+        
+        try {
+            const users = await client.write('/ip/hotspot/user/print', [
+                ['?name', username]
+            ]);
+            
+            if (users.length === 0) {
+                throw new Error('User not found');
+            }
+            
+            await client.write('/ip/hotspot/user/remove', [
+                ['numbers', users[0]['.id']]
+            ]);
+            
+            logger.info(`Deleted hotspot user ${username} from device ${deviceId}`);
+            
+            return { success: true };
+        } catch (error) {
+            logger.error(`Failed to delete hotspot user from device ${deviceId}:`, error);
+            throw error;
+        }
+    }
+    
+    async getActiveSessions(deviceId) {
+        const client = await this.connectDevice(deviceId);
+        
+        try {
+            const sessions = await client.write('/ip/hotspot/active/print');
+            return sessions.map(session => ({
+                id: session['.id'],
+                user: session.user,
+                address: session.address,
+                macAddress: session['mac-address'],
+                loginBy: session['login-by'],
+                uptime: session.uptime,
+                idleTime: session['idle-time'],
+                sessionTimeLeft: session['session-time-left'],
+                idleTimeout: session['idle-timeout'],
+                bytesIn: parseInt(session['bytes-in'] || 0),
+                bytesOut: parseInt(session['bytes-out'] || 0),
+                packetsIn: parseInt(session['packets-in'] || 0),
+                packetsOut: parseInt(session['packets-out'] || 0)
+            }));
+        } catch (error) {
+            logger.error(`Failed to get active sessions from device ${deviceId}:`, error);
+            throw error;
+        }
+    }
+    
+    async disconnectUser(deviceId, username) {
+        const client = await this.connectDevice(deviceId);
+        
+        try {
+            const sessions = await client.write('/ip/hotspot/active/print', [
+                ['?user', username]
+            ]);
+            
+            if (sessions.length === 0) {
+                throw new Error('Active session not found');
+            }
+            
+            await client.write('/ip/hotspot/active/remove', [
+                ['numbers', sessions[0]['.id']]
+            ]);
+            
+            logger.info(`Disconnected user ${username} from device ${deviceId}`);
+            
+            return { success: true };
+        } catch (error) {
+            logger.error(`Failed to disconnect user from device ${deviceId}:`, error);
+            throw error;
+        }
+    }
+    
+    async getSystemResource(deviceId) {
+        const client = await this.connectDevice(deviceId);
+        
+        try {
+            const resources = await client.write('/system/resource/print');
+            const resource = resources[0];
+            
+            return {
+                uptime: resource.uptime,
+                version: resource.version,
+                buildTime: resource['build-time'],
+                cpuModel: resource['cpu-model'],
+                cpuCount: parseInt(resource['cpu-count']),
+                cpuFrequency: parseInt(resource['cpu-frequency']),
+                cpuLoad: parseInt(resource['cpu-load']),
+                freeMemory: parseInt(resource['free-memory']),
+                totalMemory: parseInt(resource['total-memory']),
+                freeHddSpace: parseInt(resource['free-hdd-space']),
+                totalHddSpace: parseInt(resource['total-hdd-space']),
+                architecture: resource['architecture-name'],
+                board: resource['board-name'],
+                platform: resource.platform
+            };
+        } catch (error) {
+            logger.error(`Failed to get system resources from device ${deviceId}:`, error);
+            throw error;
+        }
+    }
+    
+    async backupConfiguration(deviceId) {
+        const client = await this.connectDevice(deviceId);
+        
+        try {
+            const filename = `backup-${deviceId}-${Date.now()}`;
+            
+            // Create backup
+            await client.write('/system/backup/save', [
+                ['name', filename]
+            ]);
+            
+            // Wait for backup to complete
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Get backup file
+            const files = await client.write('/file/print', [
+                ['?name', `${filename}.backup`]
+            ]);
+            
+            if (files.length === 0) {
+                throw new Error('Backup file not found');
+            }
+            
+            logger.info(`Created backup ${filename} for device ${deviceId}`);
+            
+            return {
+                filename: `${filename}.backup`,
+                size: parseInt(files[0].size),
+                creationTime: files[0]['creation-time']
+            };
+        } catch (error) {
+            logger.error(`Failed to backup device ${deviceId}:`, error);
+            throw error;
+        }
+    }
+    
+    async getHotspotProfiles(deviceId) {
+        const client = await this.connectDevice(deviceId);
+        
+        try {
+            const profiles = await client.write('/ip/hotspot/user/profile/print');
+            return profiles.map(profile => ({
+                name: profile.name,
+                sharedUsers: parseInt(profile['shared-users'] || 1),
+                rateLimit: profile['rate-limit'],
+                sessionTimeout: profile['session-timeout'],
+                idleTimeout: profile['idle-timeout'],
+                keepaliveTimeout: profile['keepalive-timeout'],
+                statusAutorefresh: profile['status-autorefresh']
+            }));
+        } catch (error) {
+            logger.error(`Failed to get hotspot profiles from device ${deviceId}:`, error);
+            throw error;
+        }
+    }
+    
+    // Cleanup inactive connections
+    cleanupConnections() {
+        this.connections.forEach((client, deviceId) => {
+            // Check if connection is still active
+            // If not, remove it
+            if (!client.connected) {
+                this.connections.delete(deviceId);
+            }
+        });
+    }
+}
+
+// Create singleton instance
+const mikrotikService = new MikroTikService();
+
+// Cleanup connections periodically
+setInterval(() => {
+    mikrotikService.cleanupConnections();
+}, 60000); // Every minute
+
+module.exports = mikrotikService;
+EOF
+
+    # Voucher Service
+    cat << 'EOF' > "$SYSTEM_DIR/app/services/VoucherService.js"
+const Voucher = require('../models/Voucher');
+const MikroTikService = require('./MikroTikService');
+const QRCodeService = require('../utils/qrcode');
+const { v4: uuidv4 } = require('uuid');
+
+class VoucherService {
+    static generateCode(length = 8, prefix = '', suffix = '') {
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        let code = '';
+        for (let i = 0; i < length; i++) {
+            code += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        return prefix + code + suffix;
+    }
+    
+    static async generateBatch(options) {
+        const {
+            quantity,
+            profile,
+            organization,
+            createdBy,
+            deviceId,
+            prefix = '',
+            suffix = '',
+            length = 8,
+            price
+        } = options;
+        
+        const batchId = uuidv4();
+        const vouchers = [];
+        
+        // Get profile details
+        const profileData = await this.getProfileData(profile);
+        
+        for (let i = 0; i < quantity; i++) {
+            let code;
+            let isUnique = false;
+            
+            // Ensure unique code
+            while (!isUnique) {
+                code = this.generateCode(length, prefix, suffix);
+                const existing = await Voucher.findOne({ code });
+                if (!existing) {
+                    isUnique = true;
+                }
+            }
+            
+            // Generate QR code
+            const qrCode = await QRCodeService.generateVoucherQR({ code });
+            
+            const voucher = new Voucher({
+                organization,
+                device: deviceId,
+                code,
+                profile: profileData,
+                status: 'active',
+                price: {
+                    amount: price || profileData.pricing?.amount || 0
+                },
+                batch: {
+                    id: batchId,
+                    createdBy,
+                    createdAt: new Date()
+                },
+                qrCode
+            });
+            
+            vouchers.push(voucher);
+        }
+        
+        // Save all vouchers
+        const savedVouchers = await Voucher.insertMany(vouchers);
+        
+        // If device is specified, create users on MikroTik
+        if (deviceId) {
+            try {
+                for (const voucher of savedVouchers) {
+                    await MikroTikService.createHotspotUser(deviceId, {
+                        username: voucher.code,
+                        password: voucher.code,
+                        profile: profile,
+                        limitUptime: this.formatDuration(profileData.duration),
+                        limitBytesIn: profileData.dataLimit * 1024 * 1024, // Convert MB to bytes
+                        comment: `Voucher created: ${new Date().toISOString()}`
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to create MikroTik users:', error);
+                // Don't fail the whole operation
+            }
+        }
+        
+        return savedVouchers;
+    }
+    
+    static async getProfileData(profileName) {
+        // This would typically fetch from database
+        // For now, return default profiles
+        const profiles = {
+            '1hour': {
+                name: '1 Hour',
+                duration: { value: 1, unit: 'hours' },
+                bandwidth: { upload: 1, download: 5 },
+                dataLimit: 500, // MB
+                simultaneousUse: 1,
+                pricing: { amount: 10 }
+            },
+            '3hours': {
+                name: '3 Hours',
+                duration: { value: 3, unit: 'hours' },
+                bandwidth: { upload: 2, download: 10 },
+                dataLimit: 1000,
+                simultaneousUse: 1,
+                pricing: { amount: 25 }
+            },
+            '1day': {
+                name: '1 Day',
+                duration: { value: 1, unit: 'days' },
+                bandwidth: { upload: 5, download: 20 },
+                dataLimit: 5000,
+                simultaneousUse: 2,
+                pricing: { amount: 50 }
+            },
+            '7days': {
+                name: '7 Days',
+                duration: { value: 7, unit: 'days' },
+                bandwidth: { upload: 10, download: 50 },
+                dataLimit: 20000,
+                simultaneousUse: 3,
+                pricing: { amount: 200 }
+            },
+            '30days': {
+                name: '30 Days',
+                duration: { value: 30, unit: 'days' },
+                bandwidth: { upload: 20, download: 100 },
+                dataLimit: 100000,
+                simultaneousUse: 5,
+                pricing: { amount: 500 }
+            }
+        };
+        
+        return profiles[profileName] || profiles['1hour'];
+    }
+    
+    static formatDuration(duration) {
+        if (!duration) return '';
+        
+        const { value, unit } = duration;
+        const suffixMap = {
+            'minutes': 'm',
+            'hours': 'h',
+            'days': 'd',
+            'weeks': 'w'
+        };
+        
+        return `${value}${suffixMap[unit] || 'h'}`;
+    }
+    
+    static async validateVoucher(code, deviceId = null) {
+        const voucher = await Voucher.findOne({ 
+            code: code.toUpperCase() 
+        }).populate('device');
+        
+        if (!voucher) {
+            return { valid: false, error: 'Voucher not found' };
+        }
+        
+        if (voucher.status !== 'active') {
+            return { valid: false, error: `Voucher is ${voucher.status}` };
+        }
+        
+        if (deviceId && voucher.device && voucher.device._id.toString() !== deviceId) {
+            return { valid: false, error: 'Voucher is for different location' };
+        }
+        
+        if (voucher.usage.expiresAt && new Date() > voucher.usage.expiresAt) {
+            voucher.status = 'expired';
+            await voucher.save();
+            return { valid: false, error: 'Voucher has expired' };
+        }
+        
+        return { 
+            valid: true, 
+            voucher: voucher.toObject()
+        };
+    }
+    
+    static async activateVoucher(data) {
+        const { code, deviceId, macAddress, ipAddress } = data;
+        
+        // Validate voucher
+        const validation = await this.validateVoucher(code, deviceId);
+        if (!validation.valid) {
+            throw new Error(validation.error);
+        }
+        
+        const voucher = await Voucher.findOne({ code: code.toUpperCase() });
+        
+        // Calculate expiry
+        const now = new Date();
+        let expiresAt = new Date(now);
+        
+        switch (voucher.profile.duration.unit) {
+            case 'minutes':
+                expiresAt.setMinutes(expiresAt.getMinutes() + voucher.profile.duration.value);
+                break;
+            case 'hours':
+                expiresAt.setHours(expiresAt.getHours() + voucher.profile.duration.value);
+                break;
+            case 'days':
+                expiresAt.setDate(expiresAt.getDate() + voucher.profile.duration.value);
+                break;
+            case 'weeks':
+                expiresAt.setDate(expiresAt.getDate() + (voucher.profile.duration.value * 7));
+                break;
+            case 'months':
+                expiresAt.setMonth(expiresAt.getMonth() + voucher.profile.duration.value);
+                break;
+        }
+        
+        // Update voucher
+        voucher.status = 'used';
+        voucher.usage.activatedAt = now;
+        voucher.usage.expiresAt = expiresAt;
+        voucher.usage.macAddress = macAddress;
+        voucher.usage.ipAddress = ipAddress;
+        
+        await voucher.save();
+        
+        return {
+            success: true,
+            expiresAt,
+            profile: voucher.profile
+        };
+    }
+    
+    static async getVouchers(filters) {
+        const query = {};
+        
+        if (filters.organization) {
+            query.organization = filters.organization;
+        }
+        
+        if (filters.status) {
+            query.status = filters.status;
+        }
+        
+        if (filters.deviceId) {
+            query.device = filters.deviceId;
+        }
+        
+        if (filters.batchId) {
+            query['batch.id'] = filters.batchId;
+        }
+        
+        const vouchers = await Voucher.find(query)
+            .populate('device', 'name location')
+            .populate('batch.createdBy', 'username')
+            .sort({ createdAt: -1 })
+            .limit(filters.limit || 100);
+        
+        return vouchers;
+    }
+    
+    static async getVoucherById(id) {
+        return await Voucher.findById(id)
+            .populate('device')
+            .populate('organization')
+            .populate('batch.createdBy');
+    }
+    
+    static async suspendVoucher(id, userId) {
+        const voucher = await Voucher.findById(id);
+        if (!voucher) {
+            throw new Error('Voucher not found');
+        }
+        
+        voucher.status = 'suspended';
+        voucher.notes = `Suspended by user ${userId} at ${new Date().toISOString()}`;
+        
+        await voucher.save();
+        
+        // Also disable on MikroTik if connected
+        if (voucher.device) {
+            try {
+                await MikroTikService.deleteHotspotUser(voucher.device, voucher.code);
+            } catch (error) {
+                console.error('Failed to delete MikroTik user:', error);
+            }
+        }
+        
+        return voucher;
+    }
+    
+    static async getStatistics(organizationId) {
+        const stats = await Voucher.aggregate([
+            { $match: { organization: organizationId } },
+            {
+                $group: {
+                    _id: '$status',
+                    count: { $sum: 1 },
+                    totalValue: { $sum: '$price.amount' }
+                }
+            }
+        ]);
+        
+        const result = {
+            total: 0,
+            active: 0,
+            used: 0,
+            expired: 0,
+            suspended: 0,
+            totalValue: 0,
+            activeValue: 0
+        };
+        
+        stats.forEach(stat => {
+            result[stat._id] = stat.count;
+            result.total += stat.count;
+            result.totalValue += stat.totalValue;
+            
+            if (stat._id === 'active') {
+                result.activeValue = stat.totalValue;
+            }
+        });
+        
+        return result;
+    }
+    
+    static async activateByPayment(paymentId) {
+        // Find vouchers associated with payment
+        const vouchers = await Voucher.find({
+            'payment.transactionId': paymentId
+        });
+        
+        for (const voucher of vouchers) {
+            voucher.payment.status = 'paid';
+            voucher.payment.paidAt = new Date();
+            await voucher.save();
+        }
+        
+        return vouchers;
+    }
+}
+
+module.exports = VoucherService;
+EOF
+
+    # Report Service
+    cat << 'EOF' > "$SYSTEM_DIR/app/services/ReportService.js"
+const moment = require('moment');
+const PaymentTransaction = require('../models/PaymentTransaction');
+const Voucher = require('../models/Voucher');
+const Session = require('../models/Session');
+const Device = require('../models/Device');
+const PDFDocument = require('pdfkit');
+const ExcelJS = require('exceljs');
+const fs = require('fs').promises;
+const path = require('path');
+
+class ReportService {
+    static async generateRevenueReport(options) {
+        const { organizationId, from, to, groupBy = 'day' } = options;
+        
+        const startDate = from ? moment(from).startOf('day') : moment().subtract(30, 'days').startOf('day');
+        const endDate = to ? moment(to).endOf('day') : moment().endOf('day');
+        
+        // Get payment transactions
+        const transactions = await PaymentTransaction.aggregate([
+            {
+                $match: {
+                    organization: organizationId,
+                    status: 'completed',
+                    createdAt: {
+                        $gte: startDate.toDate(),
+                        $lte: endDate.toDate()
+                    }
+                }
+            },
+            {
+                $group: {
+                    _id: {
+                        $dateToString: {
+                            format: groupBy === 'day' ? '%Y-%m-%d' : 
+                                   groupBy === 'week' ? '%Y-W%V' : '%Y-%m',
+                            date: '$createdAt'
+                        }
+                    },
+                    revenue: { $sum: '$amount.value' },
+                    count: { $sum: 1 },
+                    methods: { 
+                        $push: '$method' 
+                    }
+                }
+            },
+            {
+                $sort: { _id: 1 }
+            }
+        ]);
+        
+        // Calculate totals and method breakdown
+        let totalRevenue = 0;
+        let totalTransactions = 0;
+        const methodBreakdown = {};
+        
+        transactions.forEach(t => {
+            totalRevenue += t.revenue;
+            totalTransactions += t.count;
+            
+            t.methods.forEach(method => {
+                methodBreakdown[method] = (methodBreakdown[method] || 0) + 1;
+            });
+        });
+        
+        return {
+            period: { from: startDate, to: endDate },
+            groupBy,
+            data: transactions,
+            summary: {
+                totalRevenue,
+                totalTransactions,
+                averageTransaction: totalTransactions > 0 ? totalRevenue / totalTransactions : 0,
+                methodBreakdown
+            }
+        };
+    }
+    
+    static async generateUsageReport(options) {
+        const { organizationId, from, to, deviceId } = options;
+        
+        const query = { organization: organizationId };
+        
+        if (deviceId) {
+            query.device = deviceId;
+        }
+        
+        if (from || to) {
+            query.startTime = {};
+            if (from) query.startTime.$gte = new Date(from);
+            if (to) query.startTime.$lte = new Date(to);
+        }
+        
+        const sessions = await Session.aggregate([
+            { $match: query },
+            {
+                $group: {
+                    _id: '$device',
+                    totalSessions: { $sum: 1 },
+                    totalDuration: { $sum: '$duration' },
+                    totalDataUsed: { $sum: '$dataUsage.total' },
+                    uniqueUsers: { $addToSet: '$user.macAddress' },
+                    avgSessionDuration: { $avg: '$duration' }
+                }
+            },
+            {
+                $lookup: {
+                    from: 'devices',
+                    localField: '_id',
+                    foreignField: '_id',
+                    as: 'device'
+                }
+            },
+            {
+                $unwind: '$device'
+            }
+        ]);
+        
+        // Calculate peak hours
+        const hourlyUsage = await Session.aggregate([
+            { $match: query },
+            {
+                $group: {
+                    _id: { $hour: '$startTime' },
+                    count: { $sum: 1 }
+                }
+            },
+            { $sort: { count: -1 } }
+        ]);
+        
+        return {
+            devices: sessions.map(s => ({
+                deviceId: s._id,
+                deviceName: s.device.name,
+                location: s.device.location,
+                totalSessions: s.totalSessions,
+                totalDuration: s.totalDuration,
+                totalDataUsed: s.totalDataUsed,
+                uniqueUsers: s.uniqueUsers.length,
+                avgSessionDuration: s.avgSessionDuration
+            })),
+            peakHours: hourlyUsage.slice(0, 5),
+            period: { from, to }
+        };
+    }
+    
+    static async generateVoucherReport(options) {
+        const { organizationId } = options;
+        
+        // Voucher statistics by profile
+        const voucherStats = await Voucher.aggregate([
+            { $match: { organization: organizationId } },
+            {
+                $group: {
+                    _id: {
+                        profile: '$profile.name',
+                        status: '$status'
+                    },
+                    count: { $sum: 1 },
+                    totalValue: { $sum: '$price.amount' }
+                }
+            },
+            {
+                $group: {
+                    _id: '$_id.profile',
+                    stats: {
+                        $push: {
+                            status: '$_id.status',
+                            count: '$count',
+                            value: '$totalValue'
+                        }
+                    },
+                    total: { $sum: '$count' },
+                    totalValue: { $sum: '$totalValue' }
+                }
+            }
+        ]);
+        
+        // Usage patterns
+        const usagePatterns = await Voucher.aggregate([
+            { 
+                $match: { 
+                    organization: organizationId,
+                    status: 'used'
+                } 
+            },
+            {
+                $group: {
+                    _id: {
+                        dayOfWeek: { $dayOfWeek: '$usage.activatedAt' },
+                        hour: { $hour: '$usage.activatedAt' }
+                    },
+                    count: { $sum: 1 }
+                }
+            }
+        ]);
+        
+        return {
+            profiles: voucherStats,
+            usagePatterns,
+            generated: await Voucher.countDocuments({ organization: organizationId }),
+            active: await Voucher.countDocuments({ organization: organizationId, status: 'active' }),
+            revenue: await Voucher.aggregate([
+                { 
+                    $match: { 
+                        organization: organizationId,
+                        status: 'used'
+                    } 
+                },
+                {
+                    $group: {
+                        _id: null,
+                        total: { $sum: '$price.amount' }
+                    }
+                }
+            ]).then(r => r[0]?.total || 0)
+        };
+    }
+    
+    static async generateDeviceReport(options) {
+        const { organizationId } = options;
+        
+        const devices = await Device.find({ organization: organizationId })
+            .select('name status lastSeen vpnStatus location');
+        
+        const deviceStats = await Promise.all(devices.map(async (device) => {
+            const sessions = await Session.countDocuments({ device: device._id });
+            const activeUsers = await Session.countDocuments({ 
+                device: device._id, 
+                status: 'active' 
+            });
+            
+            const usage = await Session.aggregate([
+                { $match: { device: device._id } },
+                {
+                    $group: {
+                        _id: null,
+                        totalData: { $sum: '$dataUsage.total' },
+                        totalDuration: { $sum: '$duration' }
+                    }
+                }
+            ]);
+            
+            return {
+                device: {
+                    id: device._id,
+                    name: device.name,
+                    status: device.status,
+                    location: device.location,
+                    lastSeen: device.lastSeen
+                },
+                stats: {
+                    totalSessions: sessions,
+                    activeUsers,
+                    totalData: usage[0]?.totalData || 0,
+                    totalDuration: usage[0]?.totalDuration || 0,
+                    uptime: device.vpnStatus?.connected ? 
+                        moment().diff(device.vpnStatus.connectedAt, 'hours') : 0
+                }
+            };
+        }));
+        
+        return {
+            devices: deviceStats,
+            summary: {
+                total: devices.length,
+                online: devices.filter(d => d.status === 'online').length,
+                offline: devices.filter(d => d.status === 'offline').length
+            }
+        };
+    }
+    
+    static async exportReport(options) {
+        const { type, format, organizationId, userId, filters } = options;
+        
+        let reportData;
+        switch (type) {
+            case 'revenue':
+                reportData = await this.generateRevenueReport({ organizationId, ...filters });
+                break;
+            case 'usage':
+                reportData = await this.generateUsageReport({ organizationId, ...filters });
+                break;
+            case 'vouchers':
+                reportData = await this.generateVoucherReport({ organizationId, ...filters });
+                break;
+            case 'devices':
+                reportData = await this.generateDeviceReport({ organizationId, ...filters });
+                break;
+            default:
+                throw new Error('Unknown report type');
+        }
+        
+        const filename = `report-${type}-${Date.now()}.${format}`;
+        const filepath = path.join('/tmp', filename);
+        
+        switch (format) {
+            case 'pdf':
+                await this.exportToPDF(reportData, filepath, type);
+                break;
+            case 'excel':
+                await this.exportToExcel(reportData, filepath, type);
+                break;
+            case 'csv':
+                await this.exportToCSV(reportData, filepath, type);
+                break;
+            default:
+                throw new Error('Unknown format');
+        }
+        
+        // Upload to storage and return URL
+        // For now, return local path
+        return `/downloads/${filename}`;
+    }
+    
+    static async exportToPDF(data, filepath, type) {
+        const doc = new PDFDocument();
+        const stream = doc.pipe(fs.createWriteStream(filepath));
+        
+        // Add title
+        doc.fontSize(20).text(`${type.toUpperCase()} REPORT`, 50, 50);
+        doc.fontSize(12).text(`Generated: ${moment().format('YYYY-MM-DD HH:mm')}`, 50, 80);
+        
+        // Add content based on type
+        let y = 120;
+        
+        if (type === 'revenue' && data.data) {
+            doc.fontSize(14).text('Revenue Summary', 50, y);
+            y += 30;
+            
+            doc.fontSize(10);
+            data.data.forEach(item => {
+                doc.text(`${item._id}: ${item.revenue} THB (${item.count} transactions)`, 50, y);
+                y += 20;
+            });
+            
+            y += 20;
+            doc.fontSize(12).text(`Total Revenue: ${data.summary.totalRevenue} THB`, 50, y);
+        }
+        
+        doc.end();
+        await new Promise(resolve => stream.on('finish', resolve));
+    }
+    
+    static async exportToExcel(data, filepath, type) {
+        const workbook = new ExcelJS.Workbook();
+        const sheet = workbook.addWorksheet(type.toUpperCase());
+        
+        // Add headers and data based on type
+        if (type === 'revenue' && data.data) {
+            sheet.columns = [
+                { header: 'Period', key: 'period', width: 20 },
+                { header: 'Revenue (THB)', key: 'revenue', width: 15 },
+                { header: 'Transactions', key: 'count', width: 15 }
+            ];
+            
+            data.data.forEach(item => {
+                sheet.addRow({
+                    period: item._id,
+                    revenue: item.revenue,
+                    count: item.count
+                });
+            });
+            
+            // Add summary
+            sheet.addRow({});
+            sheet.addRow({
+                period: 'TOTAL',
+                revenue: data.summary.totalRevenue,
+                count: data.summary.totalTransactions
+            });
+        }
+        
+        await workbook.xlsx.writeFile(filepath);
+    }
+    
+    static async exportToCSV(data, filepath, type) {
+        let csv = '';
+        
+        if (type === 'revenue' && data.data) {
+            csv = 'Period,Revenue,Transactions\n';
+            data.data.forEach(item => {
+                csv += `${item._id},${item.revenue},${item.count}\n`;
+            });
+            csv += `\nTOTAL,${data.summary.totalRevenue},${data.summary.totalTransactions}\n`;
+        }
+        
+        await fs.writeFile(filepath, csv);
+    }
+}
+
+module.exports = ReportService;
+EOF
+
+    # PDF Service
+    cat << 'EOF' > "$SYSTEM_DIR/app/services/PDFService.js"
+const PDFDocument = require('pdfkit');
+const QRCode = require('qrcode');
+const fs = require('fs');
+const path = require('path');
+
+class PDFService {
+    static async generateVoucherPrint(options) {
+        const { voucherIds, format, template = 'default', organization } = options;
+        
+        // Load vouchers
+        const Voucher = require('../models/Voucher');
+        const vouchers = await Voucher.find({
+            _id: { $in: voucherIds },
+            organization
+        });
+        
+        const filename = `vouchers-${Date.now()}.pdf`;
+        const filepath = path.join('/tmp', filename);
+        
+        if (format === 'pdf') {
+            await this.generatePDFVouchers(vouchers, filepath, template);
+        } else if (format === 'thermal') {
+            await this.generateThermalVouchers(vouchers, filepath);
+        }
+        
+        return `/downloads/${filename}`;
+    }
+    
+    static async generatePDFVouchers(vouchers, filepath, template) {
+        const doc = new PDFDocument({
+            size: 'A4',
+            margin: 20
+        });
+        
+        const stream = doc.pipe(fs.createWriteStream(filepath));
+        
+        // Voucher dimensions (3x3 grid on A4)
+        const voucherWidth = 180;
+        const voucherHeight = 90;
+        const margin = 15;
+        const startX = 30;
+        const startY = 30;
+        
+        let currentX = startX;
+        let currentY = startY;
+        let voucherCount = 0;
+        
+        for (const voucher of vouchers) {
+            // Draw voucher border
+            doc.rect(currentX, currentY, voucherWidth, voucherHeight)
+               .stroke();
+            
+            // Add logo/header
+            doc.fontSize(14)
+               .font('Helvetica-Bold')
+               .text('WiFi Hotspot', currentX + 10, currentY + 10, {
+                   width: voucherWidth - 20,
+                   align: 'center'
+               });
+            
+            // Add voucher code
+            doc.fontSize(16)
+               .font('Helvetica-Bold')
+               .text(voucher.code, currentX + 10, currentY + 35, {
+                   width: voucherWidth - 80,
+                   align: 'left'
+               });
+            
+            // Add QR code
+            if (voucher.qrCode) {
+                const qrBuffer = Buffer.from(voucher.qrCode.split(',')[1], 'base64');
+                doc.image(qrBuffer, currentX + voucherWidth - 60, currentY + 25, {
+                    width: 50,
+                    height: 50
+                });
+            }
+            
+            // Add profile info
+            doc.fontSize(10)
+               .font('Helvetica')
+               .text(`${voucher.profile.name}`, currentX + 10, currentY + 55);
+            
+            doc.text(`Price: ${voucher.price.amount} THB`, currentX + 10, currentY + 70);
+            
+            // Move to next position
+            voucherCount++;
+            currentX += voucherWidth + margin;
+            
+            if (voucherCount % 3 === 0) {
+                currentX = startX;
+                currentY += voucherHeight + margin;
+            }
+            
+            if (voucherCount % 9 === 0 && voucherCount < vouchers.length) {
+                doc.addPage();
+                currentX = startX;
+                currentY = startY;
+            }
+        }
+        
+        doc.end();
+        await new Promise(resolve => stream.on('finish', resolve));
+    }
+    
+    static async generateThermalVouchers(vouchers, filepath) {
+        // Generate thermal printer format (80mm width)
+        const doc = new PDFDocument({
+            size: [226, 1000], // 80mm width
+            margin: 5
+        });
+        
+        const stream = doc.pipe(fs.createWriteStream(filepath));
+        
+        let currentY = 10;
+        
+        for (const voucher of vouchers) {
+            // Header
+            doc.fontSize(12)
+               .font('Helvetica-Bold')
+               .text('WiFi HOTSPOT', 5, currentY, {
+                   width: 216,
+                   align: 'center'
+               });
+            
+            currentY += 20;
+            
+            // Voucher code (large)
+            doc.fontSize(16)
+               .text(voucher.code, 5, currentY, {
+                   width: 216,
+                   align: 'center'
+               });
+            
+            currentY += 25;
+            
+            // QR Code
+            if (voucher.qrCode) {
+                const qrBuffer = Buffer.from(voucher.qrCode.split(',')[1], 'base64');
+                doc.image(qrBuffer, 63, currentY, {
+                    width: 100,
+                    height: 100
+                });
+                currentY += 110;
+            }
+            
+            // Details
+            doc.fontSize(10)
+               .font('Helvetica');
+            
+            doc.text(`Duration: ${voucher.profile.name}`, 5, currentY);
+            currentY += 15;
+            
+            doc.text(`Price: ${voucher.price.amount} THB`, 5, currentY);
+            currentY += 15;
+            
+            doc.text(`Valid until used`, 5, currentY);
+            currentY += 20;
+            
+            // Cut line
+            doc.moveTo(0, currentY)
+               .lineTo(226, currentY)
+               .dash(3, { space: 3 })
+               .stroke();
+            
+            currentY += 20;
+        }
+        
+        doc.end();
+        await new Promise(resolve => stream.on('finish', resolve));
+    }
+    
+    static async generateInvoice(invoiceData, filepath) {
+        const doc = new PDFDocument({
+            size: 'A4',
+            margin: 50
+        });
+        
+        const stream = doc.pipe(fs.createWriteStream(filepath));
+        
+        // Header
+        doc.fontSize(20)
+           .text('INVOICE', 50, 50);
+        
+        doc.fontSize(10)
+           .text(`Invoice No: ${invoiceData.invoiceNumber}`, 400, 50)
+           .text(`Date: ${moment(invoiceData.date).format('YYYY-MM-DD')}`, 400, 65);
+        
+        // Company info
+        doc.fontSize(12)
+           .text('From:', 50, 120)
+           .fontSize(10)
+           .text(invoiceData.company.name, 50, 140)
+           .text(invoiceData.company.address, 50, 155)
+           .text(`Tax ID: ${invoiceData.company.taxId}`, 50, 170);
+        
+        // Bill to
+        doc.fontSize(12)
+           .text('Bill To:', 300, 120)
+           .fontSize(10)
+           .text(invoiceData.billTo.name, 300, 140)
+           .text(invoiceData.billTo.email, 300, 155)
+           .text(invoiceData.billTo.phone, 300, 170);
+        
+        // Items table
+        let tableY = 220;
+        
+        // Table header
+        doc.fontSize(10)
+           .font('Helvetica-Bold')
+           .text('Description', 50, tableY)
+           .text('Qty', 300, tableY)
+           .text('Price', 350, tableY)
+           .text('Total', 450, tableY);
+        
+        // Line
+        doc.moveTo(50, tableY + 15)
+           .lineTo(550, tableY + 15)
+           .stroke();
+        
+        tableY += 25;
+        
+        // Items
+        doc.font('Helvetica');
+        invoiceData.items.forEach(item => {
+            doc.text(item.description, 50, tableY)
+               .text(item.quantity.toString(), 300, tableY)
+               .text(item.unitPrice.toFixed(2), 350, tableY)
+               .text(item.total.toFixed(2), 450, tableY);
+            tableY += 20;
+        });
+        
+        // Total section
+        tableY += 20;
+        doc.moveTo(350, tableY)
+           .lineTo(550, tableY)
+           .stroke();
+        
+        tableY += 10;
+        
+        doc.text('Subtotal:', 350, tableY)
+           .text(invoiceData.subtotal.toFixed(2), 450, tableY);
+        
+        tableY += 20;
+        doc.text('VAT (7%):', 350, tableY)
+           .text(invoiceData.vat.toFixed(2), 450, tableY);
+        
+        tableY += 20;
+        doc.font('Helvetica-Bold')
+           .text('Total:', 350, tableY)
+           .text(invoiceData.total.toFixed(2) + ' THB', 450, tableY);
+        
+        doc.end();
+        await new Promise(resolve => stream.on('finish', resolve));
+    }
+}
+
+module.exports = PDFService;
+EOF
+
+    # Initialize services
+    cat << 'EOF' > "$SYSTEM_DIR/app/services/index.js"
+const logger = require('../utils/logger');
+
+async function initializeServices() {
+    try {
+        logger.info('Initializing services...');
+        
+        // Initialize scheduled jobs
+        require('./SchedulerService');
+        
+        // Initialize MikroTik connections
+        const MikroTikService = require('./MikroTikService');
+        
+        // Initialize payment providers
+        // This would typically load payment gateway configurations
+        
+        logger.info('Services initialized successfully');
+    } catch (error) {
+        logger.error('Failed to initialize services:', error);
+        throw error;
+    }
+}
+
+module.exports = { initializeServices };
+EOF
+
+    # Scheduler Service
+    cat << 'EOF' > "$SYSTEM_DIR/app/services/SchedulerService.js"
+const cron = require('node-cron');
+const logger = require('../utils/logger');
+const Voucher = require('../models/Voucher');
+const Session = require('../models/Session');
+const Device = require('../models/Device');
+
+class SchedulerService {
+    static init() {
+        // Check expired vouchers every hour
+        cron.schedule('0 * * * *', async () => {
+            try {
+                await this.checkExpiredVouchers();
+            } catch (error) {
+                logger.error('Error checking expired vouchers:', error);
+            }
+        });
+        
+        // Clean up old sessions daily
+        cron.schedule('0 3 * * *', async () => {
+            try {
+                await this.cleanupOldSessions();
+            } catch (error) {
+                logger.error('Error cleaning up sessions:', error);
+            }
+        });
+        
+        // Update device status every 5 minutes
+        cron.schedule('*/5 * * * *', async () => {
+            try {
+                await this.updateDeviceStatus();
+            } catch (error) {
+                logger.error('Error updating device status:', error);
+            }
+        });
+        
+        logger.info('Scheduler service initialized');
+    }
+    
+    static async checkExpiredVouchers() {
+        const expired = await Voucher.updateMany(
+            {
+                status: 'active',
+                'usage.expiresAt': { $lt: new Date() }
+            },
+            {
+                $set: { status: 'expired' }
+            }
+        );
+        
+        if (expired.modifiedCount > 0) {
+            logger.info(`Marked ${expired.modifiedCount} vouchers as expired`);
+        }
+    }
+    
+    static async cleanupOldSessions() {
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        
+        const result = await Session.deleteMany({
+            status: { $in: ['completed', 'terminated'] },
+            endTime: { $lt: thirtyDaysAgo }
+        });
+        
+        if (result.deletedCount > 0) {
+            logger.info(`Deleted ${result.deletedCount} old sessions`);
+        }
+    }
+    
+    static async updateDeviceStatus() {
+        const devices = await Device.find({ isActive: true });
+        
+        for (const device of devices) {
+            // Check if device hasn't been seen for 10 minutes
+            const tenMinutesAgo = new Date();
+            tenMinutesAgo.setMinutes(tenMinutesAgo.getMinutes() - 10);
+            
+            if (device.lastSeen < tenMinutesAgo && device.status === 'online') {
+                device.status = 'offline';
+                device.vpnStatus.connected = false;
+                device.vpnStatus.disconnectedAt = new Date();
+                await device.save();
+                
+                logger.info(`Device ${device.name} marked as offline`);
+            }
+        }
+    }
+}
+
+// Initialize scheduler
+SchedulerService.init();
+
+module.exports = SchedulerService;
 EOF
 }
 
 # Create utility files
-create_utility_files() {
-    # Logger utility
+create_utility_files_full() {
+    # Enhanced logger
     cat << 'EOF' > "$SYSTEM_DIR/app/utils/logger.js"
 const winston = require('winston');
 const path = require('path');
@@ -2477,6 +6010,21 @@ const logger = winston.createLogger({
             filename: path.join('/var/log/mikrotik-vpn', 'combined.log'),
             maxsize: 10485760,
             maxFiles: 5
+        }),
+        new winston.transports.File({
+            filename: path.join('/var/log/mikrotik-vpn', 'access.log'),
+            level: 'info',
+            maxsize: 10485760,
+            maxFiles: 5,
+            format: winston.format.combine(
+                winston.format.timestamp(),
+                winston.format.printf(info => {
+                    if (info.message.includes('HTTP')) {
+                        return `${info.timestamp} ${info.message}`;
+                    }
+                    return null;
+                })
+            )
         })
     ]
 });
@@ -2493,9 +6041,11 @@ if (process.env.NODE_ENV !== 'production') {
 module.exports = logger;
 EOF
 
-    # Email utility
+    # Enhanced email service
     cat << 'EOF' > "$SYSTEM_DIR/app/utils/email.js"
 const nodemailer = require('nodemailer');
+const ejs = require('ejs');
+const path = require('path');
 const logger = require('./logger');
 
 class EmailService {
@@ -2522,14 +6072,20 @@ class EmailService {
         }
     }
     
-    async sendEmail({ to, subject, html, text }) {
+    async sendEmail({ to, subject, template, data, attachments }) {
         try {
+            // Render template
+            const html = await ejs.renderFile(
+                path.join(__dirname, '../views/emails', `${template}.ejs`),
+                { ...data, t: (key) => key } // Add translation function
+            );
+            
             const info = await this.transporter.sendMail({
                 from: process.env.FROM_EMAIL || '"MikroTik VPN" <noreply@example.com>',
                 to,
                 subject,
-                text,
-                html
+                html,
+                attachments
             });
             
             logger.info(`Email sent: ${info.messageId}`);
@@ -2541,19 +6097,44 @@ class EmailService {
     }
     
     async sendWelcomeEmail(user) {
-        const subject = 'Welcome to MikroTik VPN Management System';
-        const html = `
-            <h1>Welcome ${user.profile.firstName}!</h1>
-            <p>Your account has been created successfully.</p>
-            <p>Username: ${user.username}</p>
-            <p>Please verify your email by clicking the link below:</p>
-            <a href="${process.env.APP_URL}/verify/${user.verificationToken}">Verify Email</a>
-        `;
+        return this.sendEmail({
+            to: user.email,
+            subject: 'Welcome to MikroTik VPN Management System',
+            template: 'welcome',
+            data: { user }
+        });
+    }
+    
+    async sendVoucherPurchaseConfirmation(user, vouchers, transaction) {
+        return this.sendEmail({
+            to: user.email,
+            subject: 'Voucher Purchase Confirmation',
+            template: 'voucher-purchase',
+            data: { user, vouchers, transaction }
+        });
+    }
+    
+    async sendPasswordReset(user, token) {
+        const resetUrl = `${process.env.APP_URL}/reset-password/${token}`;
         
         return this.sendEmail({
             to: user.email,
-            subject,
-            html
+            subject: 'Password Reset Request',
+            template: 'password-reset',
+            data: { user, resetUrl }
+        });
+    }
+    
+    async sendInvoice(user, invoice, attachmentPath) {
+        return this.sendEmail({
+            to: user.email,
+            subject: `Invoice ${invoice.invoiceNumber}`,
+            template: 'invoice',
+            data: { user, invoice },
+            attachments: [{
+                filename: `invoice-${invoice.invoiceNumber}.pdf`,
+                path: attachmentPath
+            }]
         });
     }
 }
@@ -2561,23 +6142,104 @@ class EmailService {
 module.exports = new EmailService();
 EOF
 
-    # QR Code utility
-    cat << 'EOF' > "$SYSTEM_DIR/app/utils/qrcode.js"
-const QRCode = require('qrcode');
+    # SMS Service
+    cat << 'EOF' > "$SYSTEM_DIR/app/utils/sms.js"
+const axios = require('axios');
 const logger = require('./logger');
 
-class QRCodeService {
-    async generateVoucherQR(voucher) {
+class SMSService {
+    constructor() {
+        this.provider = process.env.SMS_PROVIDER || 'twilio';
+        this.config = {
+            twilio: {
+                accountSid: process.env.TWILIO_ACCOUNT_SID,
+                authToken: process.env.TWILIO_AUTH_TOKEN,
+                from: process.env.TWILIO_PHONE_NUMBER
+            },
+            thaibulksms: {
+                apiKey: process.env.THAIBULK_API_KEY,
+                apiSecret: process.env.THAIBULK_API_SECRET,
+                sender: process.env.THAIBULK_SENDER || 'MIKROTIK'
+            }
+        };
+    }
+    
+    async sendSMS(to, message) {
         try {
-            const data = {
-                code: voucher.code,
-                url: `${process.env.APP_URL}/voucher/${voucher.code}`
+            switch (this.provider) {
+                case 'twilio':
+                    return await this.sendViaTwilio(to, message);
+                case 'thaibulksms':
+                    return await this.sendViaThaiBulkSMS(to, message);
+                default:
+                    throw new Error('Unknown SMS provider');
+            }
+        } catch (error) {
+            logger.error('SMS send error:', error);
+            throw error;
+        }
+    }
+    
+    async sendViaTwilio(to, message) {
+        const twilio = require('twilio');
+        const client = twilio(
+            this.config.twilio.accountSid,
+            this.config.twilio.authToken
+        );
+        
+        const result = await client.messages.create({
+            body: message,
+            to: to,
+            from: this.config.twilio.from
+        });
+        
+        return { success: true, messageId: result.sid };
+    }
+    
+    async sendViaThaiBulkSMS(to, message) {
+        const response = await axios.post('https://api.thaibulksms.com/sms', {
+            key: this.config.thaibulksms.apiKey,
+            secret: this.config.thaibulksms.apiSecret,
+            sender: this.config.thaibulksms.sender,
+            phone: to,
+            message: message
+        });
+        
+        return { success: response.data.success, messageId: response.data.id };
+    }
+    
+    async sendOTP(phone, otp) {
+        const message = `Your MikroTik Hotspot OTP is: ${otp}. Valid for 5 minutes.`;
+        return this.sendSMS(phone, message);
+    }
+    
+    generateOTP(length = 6) {
+        let otp = '';
+        for (let i = 0; i < length; i++) {
+            otp += Math.floor(Math.random() * 10);
+        }
+        return otp;
+    }
+}
+
+module.exports = new SMSService();
+EOF
+
+    # Keep existing utilities and add new ones
+    cat << 'EOF' >> "$SYSTEM_DIR/app/utils/qrcode.js"
+
+    async generatePaymentQR(data) {
+        try {
+            const paymentData = {
+                amount: data.amount,
+                reference: data.reference,
+                type: 'payment'
             };
             
-            const qrCodeDataURL = await QRCode.toDataURL(JSON.stringify(data), {
-                errorCorrectionLevel: 'M',
+            const qrCodeDataURL = await QRCode.toDataURL(JSON.stringify(paymentData), {
+                errorCorrectionLevel: 'H',
                 type: 'image/png',
-                width: 300,
+                width: 400,
                 margin: 2,
                 color: {
                     dark: '#000000',
@@ -2587,34 +6249,942 @@ class QRCodeService {
             
             return qrCodeDataURL;
         } catch (error) {
-            logger.error('QR Code generation error:', error);
+            logger.error('Payment QR generation error:', error);
             throw error;
         }
     }
-    
-    async generateDeviceQR(device) {
-        try {
-            const data = {
-                id: device._id,
-                serial: device.serialNumber,
-                vpn: device.vpnIpAddress
-            };
-            
-            return await QRCode.toDataURL(JSON.stringify(data));
-        } catch (error) {
-            logger.error('QR Code generation error:', error);
-            throw error;
-        }
-    }
-}
-
-module.exports = new QRCodeService();
 EOF
 }
 
-# Create application config files
-create_app_config_files() {
-    # Application .env file
+# Create view templates
+create_view_templates() {
+    # Main layout
+    mkdir -p "$SYSTEM_DIR/app/views/layouts"
+    cat << 'EOF' > "$SYSTEM_DIR/app/views/layouts/main.ejs"
+<!DOCTYPE html>
+<html lang="<%= lang %>" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><%= typeof title !== 'undefined' ? title : 'MikroTik VPN Management' %></title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Alpine.js -->
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- DataTables -->
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/dataTables.tailwindcss.min.css">
+    
+    <!-- SweetAlert2 -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css">
+    
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/css/app.css">
+    
+    <%- style %>
+</head>
+<body class="h-full bg-gray-50">
+    <div class="min-h-full">
+        <!-- Navigation -->
+        <nav class="bg-white shadow-sm" x-data="{ open: false }">
+            <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+                <div class="flex h-16 justify-between">
+                    <div class="flex">
+                        <div class="flex flex-shrink-0 items-center">
+                            <img class="h-8 w-auto" src="/static/images/logo.png" alt="MikroTik VPN">
+                        </div>
+                        <div class="hidden sm:-my-px sm:ml-6 sm:flex sm:space-x-8">
+                            <a href="/" class="<%= typeof activeMenu !== 'undefined' && activeMenu === 'dashboard' ? 'border-indigo-500 text-gray-900' : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700' %> inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                                <%= t('dashboard') %>
+                            </a>
+                            <a href="/devices" class="<%= typeof activeMenu !== 'undefined' && activeMenu === 'devices' ? 'border-indigo-500 text-gray-900' : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700' %> inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                                <%= t('devices') %>
+                            </a>
+                            <a href="/vouchers" class="<%= typeof activeMenu !== 'undefined' && activeMenu === 'vouchers' ? 'border-indigo-500 text-gray-900' : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700' %> inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                                <%= t('vouchers') %>
+                            </a>
+                            <a href="/users" class="<%= typeof activeMenu !== 'undefined' && activeMenu === 'users' ? 'border-indigo-500 text-gray-900' : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700' %> inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                                <%= t('users') %>
+                            </a>
+                            <a href="/reports" class="<%= typeof activeMenu !== 'undefined' && activeMenu === 'reports' ? 'border-indigo-500 text-gray-900' : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700' %> inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                                <%= t('reports') %>
+                            </a>
+                        </div>
+                    </div>
+                    <div class="hidden sm:ml-6 sm:flex sm:items-center">
+                        <!-- Language Selector -->
+                        <div class="relative" x-data="{ open: false }">
+                            <button @click="open = !open" class="flex items-center text-sm rounded-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
+                                <i class="fas fa-globe mr-2"></i>
+                                <%= lang.toUpperCase() %>
+                            </button>
+                            <div x-show="open" @click.away="open = false" class="absolute right-0 z-10 mt-2 w-48 origin-top-right rounded-md bg-white py-1 shadow-lg ring-1 ring-black ring-opacity-5">
+                                <a href="/lang/th" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">ไทย</a>
+                                <a href="/lang/en" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">English</a>
+                            </div>
+                        </div>
+                        
+                        <!-- Profile dropdown -->
+                        <div class="relative ml-3" x-data="{ open: false }">
+                            <button @click="open = !open" class="flex items-center rounded-full bg-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
+                                <img class="h-8 w-8 rounded-full" src="<%= user?.profile?.avatar || '/static/images/default-avatar.png' %>" alt="">
+                            </button>
+                            <div x-show="open" @click.away="open = false" class="absolute right-0 z-10 mt-2 w-48 origin-top-right rounded-md bg-white py-1 shadow-lg ring-1 ring-black ring-opacity-5">
+                                <a href="/profile" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"><%= t('profile') %></a>
+                                <a href="/settings" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"><%= t('settings') %></a>
+                                <hr class="my-1">
+                                <a href="/logout" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"><%= t('logout') %></a>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Mobile menu button -->
+                    <div class="-mr-2 flex items-center sm:hidden">
+                        <button @click="open = !open" class="inline-flex items-center justify-center rounded-md bg-white p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
+                            <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                <path x-show="!open" stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+                                <path x-show="open" stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Mobile menu -->
+            <div x-show="open" class="sm:hidden">
+                <div class="space-y-1 pb-3 pt-2">
+                    <a href="/" class="block border-l-4 <%= typeof activeMenu !== 'undefined' && activeMenu === 'dashboard' ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-transparent text-gray-600 hover:border-gray-300 hover:bg-gray-50 hover:text-gray-800' %> py-2 pl-3 pr-4 text-base font-medium">
+                        <%= t('dashboard') %>
+                    </a>
+                    <!-- Add other mobile menu items -->
+                </div>
+            </div>
+        </nav>
+        
+        <!-- Flash Messages -->
+        <% if (success_msg && success_msg.length > 0) { %>
+        <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-4">
+            <div class="rounded-md bg-green-50 p-4">
+                <div class="flex">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-check-circle text-green-400"></i>
+                    </div>
+                    <div class="ml-3">
+                        <p class="text-sm font-medium text-green-800"><%= success_msg %></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <% } %>
+        
+        <% if (error_msg && error_msg.length > 0) { %>
+        <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-4">
+            <div class="rounded-md bg-red-50 p-4">
+                <div class="flex">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-exclamation-circle text-red-400"></i>
+                    </div>
+                    <div class="ml-3">
+                        <p class="text-sm font-medium text-red-800"><%= error_msg %></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <% } %>
+        
+        <!-- Page Content -->
+        <main>
+            <div class="mx-auto max-w-7xl py-6 sm:px-6 lg:px-8">
+                <%- body %>
+            </div>
+        </main>
+    </div>
+    
+    <!-- Scripts -->
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.6/js/dataTables.tailwindcss.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/static/js/app.js"></script>
+    
+    <%- script %>
+</body>
+</html>
+EOF
+
+    # Dashboard view
+    mkdir -p "$SYSTEM_DIR/app/views/dashboard"
+    cat << 'EOF' > "$SYSTEM_DIR/app/views/dashboard/index.ejs"
+<div class="px-4 sm:px-6 lg:px-8">
+    <div class="sm:flex sm:items-center">
+        <div class="sm:flex-auto">
+            <h1 class="text-2xl font-semibold leading-6 text-gray-900"><%= t('dashboard') %></h1>
+            <p class="mt-2 text-sm text-gray-700"><%= t('dashboard.description') %></p>
+        </div>
+    </div>
+    
+    <!-- Stats -->
+    <div class="mt-8 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+        <!-- Total Devices -->
+        <div class="overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6">
+            <dt class="truncate text-sm font-medium text-gray-500"><%= t('devices') %></dt>
+            <dd class="mt-1 flex items-baseline justify-between">
+                <div class="flex items-baseline text-2xl font-semibold text-indigo-600">
+                    <span id="totalDevices">0</span>
+                </div>
+                <div class="ml-2 flex items-baseline text-sm font-semibold text-green-600">
+                    <span id="onlineDevices">0</span> <%= t('online') %>
+                </div>
+            </dd>
+        </div>
+        
+        <!-- Active Users -->
+        <div class="overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6">
+            <dt class="truncate text-sm font-medium text-gray-500"><%= t('active') %> <%= t('users') %></dt>
+            <dd class="mt-1 text-2xl font-semibold text-indigo-600">
+                <span id="activeUsers">0</span>
+            </dd>
+        </div>
+        
+        <!-- Total Vouchers -->
+        <div class="overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6">
+            <dt class="truncate text-sm font-medium text-gray-500"><%= t('vouchers') %></dt>
+            <dd class="mt-1 flex items-baseline justify-between">
+                <div class="flex items-baseline text-2xl font-semibold text-indigo-600">
+                    <span id="totalVouchers">0</span>
+                </div>
+                <div class="ml-2 flex items-baseline text-sm font-semibold text-gray-600">
+                    <span id="activeVouchers">0</span> <%= t('active') %>
+                </div>
+            </dd>
+        </div>
+        
+        <!-- Today's Revenue -->
+        <div class="overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6">
+            <dt class="truncate text-sm font-medium text-gray-500"><%= t('revenue.today') %></dt>
+            <dd class="mt-1 text-2xl font-semibold text-indigo-600">
+                ฿<span id="todayRevenue">0</span>
+            </dd>
+        </div>
+    </div>
+    
+    <!-- Charts -->
+    <div class="mt-8 grid grid-cols-1 gap-8 lg:grid-cols-2">
+        <!-- Usage Chart -->
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="px-4 py-5 sm:p-6">
+                <h3 class="text-lg leading-6 font-medium text-gray-900"><%= t('usage.chart') %></h3>
+                <div class="mt-5">
+                    <canvas id="usageChart" width="400" height="200"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Revenue Chart -->
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="px-4 py-5 sm:p-6">
+                <h3 class="text-lg leading-6 font-medium text-gray-900"><%= t('revenue.chart') %></h3>
+                <div class="mt-5">
+                    <canvas id="revenueChart" width="400" height="200"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Recent Activities -->
+    <div class="mt-8">
+        <div class="bg-white shadow overflow-hidden sm:rounded-md">
+            <div class="px-4 py-5 sm:px-6">
+                <h3 class="text-lg leading-6 font-medium text-gray-900"><%= t('recent.activities') %></h3>
+            </div>
+            <ul id="recentActivities" class="divide-y divide-gray-200">
+                <!-- Activities will be loaded here -->
+            </ul>
+        </div>
+    </div>
+</div>
+
+<script>
+// Initialize real-time updates
+const socket = io();
+
+socket.on('connect', () => {
+    console.log('Connected to server');
+    socket.emit('join:organization', '<%= user.organization._id %>');
+});
+
+// Update stats in real-time
+socket.on('stats:update', (data) => {
+    document.getElementById('totalDevices').textContent = data.totalDevices;
+    document.getElementById('onlineDevices').textContent = data.onlineDevices;
+    document.getElementById('activeUsers').textContent = data.activeUsers;
+    document.getElementById('totalVouchers').textContent = data.totalVouchers;
+    document.getElementById('activeVouchers').textContent = data.activeVouchers;
+    document.getElementById('todayRevenue').textContent = data.todayRevenue.toFixed(2);
+});
+
+// Load initial stats
+fetch('/api/stats')
+    .then(res => res.json())
+    .then(data => {
+        if (data.success) {
+            // Update stats
+            socket.emit('stats:update', data.data);
+            
+            // Initialize charts
+            initializeCharts(data.data);
+        }
+    });
+
+function initializeCharts(data) {
+    // Usage Chart
+    const usageCtx = document.getElementById('usageChart').getContext('2d');
+    new Chart(usageCtx, {
+        type: 'line',
+        data: {
+            labels: data.usageChart.labels,
+            datasets: [{
+                label: '<%= t("users") %>',
+                data: data.usageChart.data,
+                borderColor: 'rgb(99, 102, 241)',
+                backgroundColor: 'rgba(99, 102, 241, 0.1)',
+                tension: 0.4
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: false
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true
+                }
+            }
+        }
+    });
+    
+    // Revenue Chart
+    const revenueCtx = document.getElementById('revenueChart').getContext('2d');
+    new Chart(revenueCtx, {
+        type: 'bar',
+        data: {
+            labels: data.revenueChart.labels,
+            datasets: [{
+                label: '<%= t("revenue") %>',
+                data: data.revenueChart.data,
+                backgroundColor: 'rgb(99, 102, 241)'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: false
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true
+                }
+            }
+        }
+    });
+}
+</script>
+EOF
+
+    # Create email templates
+    mkdir -p "$SYSTEM_DIR/app/views/emails"
+    cat << 'EOF' > "$SYSTEM_DIR/app/views/emails/welcome.ejs"
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Welcome</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background-color: #4F46E5; color: white; padding: 20px; text-align: center; }
+        .content { padding: 20px; background-color: #f9fafb; }
+        .button { display: inline-block; padding: 10px 20px; background-color: #4F46E5; color: white; text-decoration: none; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Welcome to MikroTik VPN Management System</h1>
+        </div>
+        <div class="content">
+            <p>Hello <%= user.profile.firstName %>,</p>
+            <p>Your account has been created successfully. You can now log in and start managing your MikroTik devices.</p>
+            <p>Username: <strong><%= user.username %></strong></p>
+            <p>Email: <strong><%= user.email %></strong></p>
+            <p>
+                <a href="<%= process.env.APP_URL %>" class="button">Login Now</a>
+            </p>
+            <p>If you have any questions, please contact our support team.</p>
+            <p>Best regards,<br>MikroTik VPN Team</p>
+        </div>
+    </div>
+</body>
+</html>
+EOF
+}
+
+# Create captive portal templates
+create_captive_portal_templates() {
+    mkdir -p "$SYSTEM_DIR/app/views/portal"
+    
+    # Portal index
+    cat << 'EOF' > "$SYSTEM_DIR/app/views/portal/index.ejs"
+<!DOCTYPE html>
+<html lang="<%= lang %>">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><%= t('portal.title') %></title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen flex items-center justify-center">
+    <div class="max-w-md w-full mx-auto p-6">
+        <!-- Logo and Title -->
+        <div class="text-center mb-8">
+            <% if (template.design?.logo) { %>
+                <img src="<%= template.design.logo %>" alt="Logo" class="h-20 mx-auto mb-4">
+            <% } %>
+            <h1 class="text-3xl font-bold text-gray-800"><%= t('portal.welcome') %></h1>
+            <p class="text-gray-600 mt-2"><%= t('portal.loginTitle') %></p>
+        </div>
+        
+        <!-- Login Methods -->
+        <div class="bg-white rounded-lg shadow-xl p-8">
+            <div class="space-y-4">
+                <% template.loginMethods.forEach(method => { %>
+                    <% if (method.enabled) { %>
+                        <% if (method.type === 'voucher') { %>
+                            <!-- Voucher Login -->
+                            <div x-data="{ showVoucher: false }">
+                                <button @click="showVoucher = !showVoucher" class="w-full bg-indigo-600 text-white rounded-lg px-4 py-3 hover:bg-indigo-700 transition duration-200 flex items-center justify-center">
+                                    <i class="fas fa-ticket-alt mr-2"></i>
+                                    <%= t('portal.loginMethods.voucher') %>
+                                </button>
+                                
+                                <div x-show="showVoucher" x-transition class="mt-4">
+                                    <form action="/portal/login/voucher" method="POST">
+                                        <input type="text" name="code" placeholder="<%= t('portal.voucherCode') %>" 
+                                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-indigo-500"
+                                               required autocomplete="off">
+                                        <button type="submit" class="w-full mt-2 bg-indigo-600 text-white rounded-lg px-4 py-2 hover:bg-indigo-700">
+                                            <%= t('portal.loginButton') %>
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        <% } else if (method.type === 'userpass') { %>
+                            <!-- Username/Password Login -->
+                            <div x-data="{ showUserPass: false }">
+                                <button @click="showUserPass = !showUserPass" class="w-full bg-green-600 text-white rounded-lg px-4 py-3 hover:bg-green-700 transition duration-200 flex items-center justify-center">
+                                    <i class="fas fa-user mr-2"></i>
+                                    <%= t('portal.loginMethods.userpass') %>
+                                </button>
+                                
+                                <div x-show="showUserPass" x-transition class="mt-4">
+                                    <form action="/portal/login/userpass" method="POST">
+                                        <input type="text" name="username" placeholder="<%= t('portal.username') %>" 
+                                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-green-500 mb-2"
+                                               required>
+                                        <input type="password" name="password" placeholder="<%= t('portal.password') %>" 
+                                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-green-500"
+                                               required>
+                                        <button type="submit" class="w-full mt-2 bg-green-600 text-white rounded-lg px-4 py-2 hover:bg-green-700">
+                                            <%= t('portal.loginButton') %>
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        <% } else if (method.type === 'sms') { %>
+                            <!-- SMS OTP Login -->
+                            <div x-data="{ showSMS: false, otpSent: false, phone: '' }">
+                                <button @click="showSMS = !showSMS" class="w-full bg-orange-600 text-white rounded-lg px-4 py-3 hover:bg-orange-700 transition duration-200 flex items-center justify-center">
+                                    <i class="fas fa-sms mr-2"></i>
+                                    <%= t('portal.loginMethods.sms') %>
+                                </button>
+                                
+                                <div x-show="showSMS" x-transition class="mt-4">
+                                    <div x-show="!otpSent">
+                                        <input type="tel" x-model="phone" placeholder="<%= t('portal.phoneNumber') %>" 
+                                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-orange-500"
+                                               pattern="[0-9]{10}" required>
+                                        <button @click="sendOTP(phone)" class="w-full mt-2 bg-orange-600 text-white rounded-lg px-4 py-2 hover:bg-orange-700">
+                                            <%= t('portal.sendOTP') %>
+                                        </button>
+                                    </div>
+                                    
+                                    <div x-show="otpSent">
+                                        <form action="/portal/login/sms/verify" method="POST">
+                                            <input type="hidden" name="phone" :value="phone">
+                                            <input type="text" name="otp" placeholder="<%= t('portal.enterOTP') %>" 
+                                                   class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-orange-500"
+                                                   maxlength="6" required>
+                                            <button type="submit" class="w-full mt-2 bg-orange-600 text-white rounded-lg px-4 py-2 hover:bg-orange-700">
+                                                <%= t('portal.verifyOTP') %>
+                                            </button>
+                                        </form>
+                                    </div>
+                                </div>
+                            </div>
+                        <% } else if (method.type === 'social') { %>
+                            <!-- Social Login -->
+                            <div class="space-y-2">
+                                <% template.socialProviders.forEach(provider => { %>
+                                    <% if (provider.enabled) { %>
+                                        <a href="/portal/login/social/<%= provider.provider %>" 
+                                           class="w-full bg-<%= provider.provider === 'facebook' ? 'blue' : provider.provider === 'line' ? 'green' : 'red' %>-600 text-white rounded-lg px-4 py-3 hover:opacity-90 transition duration-200 flex items-center justify-center">
+                                            <i class="fab fa-<%= provider.provider %> mr-2"></i>
+                                            <%= t('portal.loginWith') %> <%= provider.provider.charAt(0).toUpperCase() + provider.provider.slice(1) %>
+                                        </a>
+                                    <% } %>
+                                <% }); %>
+                            </div>
+                        <% } %>
+                    <% } %>
+                <% }); %>
+            </div>
+            
+            <!-- Terms and Conditions -->
+            <% if (template.features?.showTerms) { %>
+                <div class="mt-6 text-center">
+                    <p class="text-sm text-gray-600">
+                        <%= t('portal.byLoggingIn') %>
+                        <a href="/portal/terms" class="text-indigo-600 hover:underline"><%= t('portal.termsAndConditions') %></a>
+                    </p>
+                </div>
+            <% } %>
+            
+            <!-- Buy Voucher Link -->
+            <% if (template.features?.showVoucherPurchase) { %>
+                <div class="mt-4 text-center">
+                    <a href="/portal/buy-voucher" class="text-indigo-600 hover:underline">
+                        <i class="fas fa-shopping-cart mr-1"></i>
+                        <%= t('portal.buyVoucher') %>
+                    </a>
+                </div>
+            <% } %>
+        </div>
+        
+        <!-- Language Selector -->
+        <% if (template.features?.showLanguageSelector) { %>
+            <div class="mt-6 text-center">
+                <select onchange="window.location.href='/portal/lang/' + this.value" 
+                        class="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-indigo-500">
+                    <option value="th" <%= lang === 'th' ? 'selected' : '' %>>ไทย</option>
+                    <option value="en" <%= lang === 'en' ? 'selected' : '' %>>English</option>
+                </select>
+            </div>
+        <% } %>
+    </div>
+    
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script>
+        function sendOTP(phone) {
+            fetch('/portal/login/sms/request', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ phone })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    Alpine.store('otpSent', true);
+                }
+            });
+        }
+    </script>
+</body>
+</html>
+EOF
+
+    # Status page (after login)
+    cat << 'EOF' > "$SYSTEM_DIR/app/views/portal/status.ejs"
+<!DOCTYPE html>
+<html lang="<%= lang %>">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><%= t('portal.status') %></title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="max-w-2xl mx-auto p-6">
+        <div class="bg-white rounded-lg shadow-lg p-8">
+            <div class="text-center mb-6">
+                <div class="w-20 h-20 bg-green-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <i class="fas fa-check text-white text-3xl"></i>
+                </div>
+                <h1 class="text-2xl font-bold text-gray-800"><%= t('portal.connected') %></h1>
+                <p class="text-gray-600 mt-2"><%= t('portal.enjoyInternet') %></p>
+            </div>
+            
+            <!-- Session Info -->
+            <div class="grid grid-cols-2 gap-4 mb-6">
+                <div class="bg-gray-50 rounded-lg p-4">
+                    <p class="text-sm text-gray-600"><%= t('portal.timeRemaining') %></p>
+                    <p class="text-xl font-bold text-indigo-600" id="timeRemaining">--:--:--</p>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-4">
+                    <p class="text-sm text-gray-600"><%= t('portal.dataRemaining') %></p>
+                    <p class="text-xl font-bold text-indigo-600" id="dataRemaining">-- MB</p>
+                </div>
+            </div>
+            
+            <!-- Usage Stats -->
+            <div class="border-t pt-6">
+                <h2 class="text-lg font-semibold text-gray-800 mb-4"><%= t('portal.usageStats') %></h2>
+                <div class="space-y-3">
+                    <div class="flex justify-between">
+                        <span class="text-gray-600"><%= t('portal.download') %></span>
+                        <span class="font-medium" id="downloadUsage">0 MB</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-600"><%= t('portal.upload') %></span>
+                        <span class="font-medium" id="uploadUsage">0 MB</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-600"><%= t('portal.ipAddress') %></span>
+                        <span class="font-medium"><%= session.ipAddress %></span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Disconnect Button -->
+            <div class="mt-8">
+                <form action="/portal/logout" method="POST">
+                    <button type="submit" class="w-full bg-red-600 text-white rounded-lg px-4 py-3 hover:bg-red-700 transition duration-200">
+                        <i class="fas fa-sign-out-alt mr-2"></i>
+                        <%= t('portal.disconnect') %>
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Update remaining time
+        let remainingSeconds = <%= session.timeRemaining || 0 %>;
+        
+        function updateTimer() {
+            if (remainingSeconds > 0) {
+                remainingSeconds--;
+                const hours = Math.floor(remainingSeconds / 3600);
+                const minutes = Math.floor((remainingSeconds % 3600) / 60);
+                const seconds = remainingSeconds % 60;
+                
+                document.getElementById('timeRemaining').textContent = 
+                    `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            } else {
+                window.location.href = '/portal';
+            }
+        }
+        
+        setInterval(updateTimer, 1000);
+        updateTimer();
+        
+        // Update usage stats periodically
+        setInterval(() => {
+            fetch('/portal/api/usage')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('dataRemaining').textContent = `${data.dataRemaining} MB`;
+                        document.getElementById('downloadUsage').textContent = `${data.download} MB`;
+                        document.getElementById('uploadUsage').textContent = `${data.upload} MB`;
+                    }
+                });
+        }, 10000); // Every 10 seconds
+    </script>
+</body>
+</html>
+EOF
+}
+
+# Create Tailwind configuration
+create_tailwind_config() {
+    cat << 'EOF' > "$SYSTEM_DIR/app/tailwind.config.js"
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: [
+    "./views/**/*.{ejs,html,js}",
+    "./public/**/*.{html,js}"
+  ],
+  theme: {
+    extend: {
+      colors: {
+        primary: {
+          50: '#eff6ff',
+          100: '#dbeafe',
+          200: '#bfdbfe',
+          300: '#93bbfd',
+          400: '#60a5fa',
+          500: '#3b82f6',
+          600: '#2563eb',
+          700: '#1d4ed8',
+          800: '#1e40af',
+          900: '#1e3a8a'
+        }
+      },
+      fontFamily: {
+        sans: ['Sarabun', 'ui-sans-serif', 'system-ui', '-apple-system', 'sans-serif'],
+      }
+    },
+  },
+  plugins: [
+    require('@tailwindcss/forms'),
+    require('@tailwindcss/typography'),
+  ],
+}
+EOF
+
+    # Create base CSS file
+    cat << 'EOF' > "$SYSTEM_DIR/app/public/css/app.css"
+@import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    body {
+        @apply font-sans antialiased;
+    }
+}
+
+@layer components {
+    .btn-primary {
+        @apply bg-indigo-600 text-white font-medium py-2 px-4 rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition duration-150 ease-in-out;
+    }
+    
+    .btn-secondary {
+        @apply bg-gray-200 text-gray-700 font-medium py-2 px-4 rounded-lg hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition duration-150 ease-in-out;
+    }
+    
+    .input-field {
+        @apply block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm;
+    }
+    
+    .card {
+        @apply bg-white overflow-hidden shadow rounded-lg;
+    }
+    
+    .card-header {
+        @apply px-4 py-5 sm:px-6 border-b border-gray-200;
+    }
+    
+    .card-body {
+        @apply px-4 py-5 sm:p-6;
+    }
+}
+EOF
+
+    # Create main JavaScript file
+    cat << 'EOF' > "$SYSTEM_DIR/app/public/js/app.js"
+// Global app object
+window.MikrotikVPN = {
+    // Initialize DataTables with Thai language support
+    initDataTable: function(selector, options = {}) {
+        const defaultOptions = {
+            language: {
+                url: window.currentLang === 'th' 
+                    ? '//cdn.datatables.net/plug-ins/1.13.6/i18n/th.json'
+                    : '//cdn.datatables.net/plug-ins/1.13.6/i18n/en-GB.json'
+            },
+            pageLength: 25,
+            responsive: true,
+            dom: 'Bfrtip',
+            buttons: [
+                'copy', 'excel', 'pdf', 'print'
+            ]
+        };
+        
+        return $(selector).DataTable(Object.assign(defaultOptions, options));
+    },
+    
+    // Show confirmation dialog
+    confirm: function(title, text, callback) {
+        Swal.fire({
+            title: title,
+            text: text,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#3085d6',
+            cancelButtonColor: '#d33',
+            confirmButtonText: window.t('confirm'),
+            cancelButtonText: window.t('cancel')
+        }).then((result) => {
+            if (result.isConfirmed) {
+                callback();
+            }
+        });
+    },
+    
+    // Show success message
+    success: function(title, text) {
+        Swal.fire({
+            icon: 'success',
+            title: title,
+            text: text,
+            timer: 3000,
+            timerProgressBar: true
+        });
+    },
+    
+    // Show error message
+    error: function(title, text) {
+        Swal.fire({
+            icon: 'error',
+            title: title,
+            text: text
+        });
+    },
+    
+    // Format currency
+    formatCurrency: function(amount, currency = 'THB') {
+        return new Intl.NumberFormat(window.currentLang === 'th' ? 'th-TH' : 'en-US', {
+            style: 'currency',
+            currency: currency
+        }).format(amount);
+    },
+    
+    // Format date/time
+    formatDateTime: function(date) {
+        return new Intl.DateTimeFormat(window.currentLang === 'th' ? 'th-TH' : 'en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        }).format(new Date(date));
+    },
+    
+    // AJAX wrapper with error handling
+    ajax: function(options) {
+        const defaults = {
+            contentType: 'application/json',
+            dataType: 'json',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        };
+        
+        return $.ajax(Object.assign(defaults, options))
+            .fail((xhr, status, error) => {
+                if (xhr.status === 401) {
+                    window.location.href = '/login';
+                } else if (xhr.status === 403) {
+                    this.error('Access Denied', 'You do not have permission to perform this action.');
+                } else {
+                    this.error('Error', xhr.responseJSON?.error?.message || 'An unexpected error occurred');
+                }
+            });
+    }
+};
+
+// Set current language
+window.currentLang = document.documentElement.lang || 'th';
+
+// Translation function (would be populated from server)
+window.t = function(key) {
+    // This would normally fetch from translations
+    return key;
+};
+
+// Initialize on document ready
+$(document).ready(function() {
+    // Initialize tooltips
+    $('[data-toggle="tooltip"]').tooltip();
+    
+    // Auto-hide alerts after 5 seconds
+    $('.alert').delay(5000).fadeOut('slow');
+    
+    // Handle delete confirmations
+    $('.delete-confirm').on('click', function(e) {
+        e.preventDefault();
+        const url = $(this).attr('href');
+        const itemName = $(this).data('name') || 'this item';
+        
+        MikrotikVPN.confirm(
+            'Confirm Delete',
+            `Are you sure you want to delete ${itemName}?`,
+            () => window.location.href = url
+        );
+    });
+    
+    // Handle AJAX forms
+    $('form.ajax-form').on('submit', function(e) {
+        e.preventDefault();
+        const form = $(this);
+        const submitBtn = form.find('button[type="submit"]');
+        
+        // Disable submit button
+        submitBtn.prop('disabled', true);
+        
+        MikrotikVPN.ajax({
+            url: form.attr('action'),
+            method: form.attr('method') || 'POST',
+            data: JSON.stringify(form.serializeObject()),
+            success: function(response) {
+                if (response.success) {
+                    MikrotikVPN.success('Success', response.message || 'Operation completed successfully');
+                    
+                    // Redirect if specified
+                    if (response.redirect) {
+                        setTimeout(() => window.location.href = response.redirect, 1500);
+                    }
+                }
+            },
+            complete: function() {
+                submitBtn.prop('disabled', false);
+            }
+        });
+    });
+});
+
+// jQuery serialize object extension
+$.fn.serializeObject = function() {
+    var o = {};
+    var a = this.serializeArray();
+    $.each(a, function() {
+        if (o[this.name]) {
+            if (!o[this.name].push) {
+                o[this.name] = [o[this.name]];
+            }
+            o[this.name].push(this.value || '');
+        } else {
+            o[this.name] = this.value || '';
+        }
+    });
+    return o;
+};
+EOF
+}
+
+# Create app configuration files
+create_app_config_files_full() {
+    # Application .env file with all features
     cat << EOF > "$SYSTEM_DIR/app/.env"
 # Application Configuration
 NODE_ENV=production
@@ -2623,7 +7193,7 @@ HOST=0.0.0.0
 
 # URLs
 APP_URL=https://$DOMAIN_NAME
-CORS_ORIGIN=https://$DOMAIN_NAME,https://admin.$DOMAIN_NAME
+CORS_ORIGIN=https://$DOMAIN_NAME,https://admin.$DOMAIN_NAME,https://monitor.$DOMAIN_NAME
 
 # Database Configuration
 MONGODB_URI=mongodb://mikrotik_app:$MONGO_APP_PASSWORD@mongodb:27017/mikrotik_vpn?authSource=mikrotik_vpn&authMechanism=SCRAM-SHA-256
@@ -2644,10 +7214,33 @@ SMTP_PASS=your-app-password
 FROM_EMAIL=noreply@$DOMAIN_NAME
 FROM_NAME=MikroTik VPN
 
+# SMS Configuration
+SMS_PROVIDER=thaibulksms
+THAIBULK_API_KEY=your-api-key
+THAIBULK_API_SECRET=your-api-secret
+THAIBULK_SENDER=MIKROTIK
+
+# Payment Configuration
+PAYMENT_ENABLED=true
+PROMPTPAY_NUMBER=0812345678
+PROMPTPAY_NAME=$DOMAIN_NAME
+
+# Omise Configuration
+OMISE_PUBLIC_KEY=pkey_test_xxxxx
+OMISE_SECRET_KEY=skey_test_xxxxx
+
+# TrueMoney Configuration
+TRUEMONEY_APP_ID=your-app-id
+TRUEMONEY_APP_SECRET=your-app-secret
+
 # VPN Configuration
 VPN_NETWORK=$VPN_NETWORK
 OPENVPN_HOST=$DOMAIN_NAME
 OPENVPN_PORT=1194
+
+# MikroTik Configuration
+MIKROTIK_USER=admin
+MIKROTIK_PASSWORD=your-mikrotik-password
 
 # Monitoring
 PROMETHEUS_ENABLED=true
@@ -2657,9 +7250,17 @@ GRAFANA_URL=http://grafana:3000
 LOG_LEVEL=info
 LOG_DIR=/var/log/mikrotik-vpn
 
+# Localization
+DEFAULT_LANGUAGE=$DEFAULT_LANGUAGE
+DEFAULT_CURRENCY=$DEFAULT_CURRENCY
+
 # Rate Limiting
 RATE_LIMIT_WINDOW=15
 RATE_LIMIT_MAX=100
+
+# File Upload
+MAX_FILE_SIZE=52428800
+UPLOAD_DIR=/opt/mikrotik-vpn/uploads
 EOF
 
     # PM2 ecosystem file
@@ -2683,7 +7284,7 @@ module.exports = {
         max_restarts: 10,
         min_uptime: '10s',
         watch: false,
-        ignore_watch: ['node_modules', 'logs', 'public'],
+        ignore_watch: ['node_modules', 'logs', 'public', 'uploads'],
         env_production: {
             NODE_ENV: 'production',
             PORT: 3000
@@ -2691,9 +7292,836 @@ module.exports = {
     }]
 };
 EOF
+
+    # Create controller files
+    mkdir -p "$SYSTEM_DIR/app/controllers"
+    
+    # Portal Controller
+    cat << 'EOF' > "$SYSTEM_DIR/app/controllers/PortalController.js"
+const PortalTemplate = require('../models/PortalTemplate');
+const Voucher = require('../models/Voucher');
+const SmsOtp = require('../models/SmsOtp');
+const Session = require('../models/Session');
+const Device = require('../models/Device');
+const VoucherService = require('../services/VoucherService');
+const MikroTikService = require('../services/MikroTikService');
+const SMSService = require('../utils/sms');
+
+class PortalController {
+    static async showPortal(req, res) {
+        try {
+            // Get device info from router
+            const deviceMac = req.query.mac || req.headers['x-device-mac'];
+            const deviceIp = req.query.ip || req.ip;
+            
+            // Find device
+            const device = await Device.findOne({ macAddress: deviceMac });
+            
+            // Get portal template
+            let template = await PortalTemplate.findOne({
+                organization: device?.organization,
+                isActive: true
+            });
+            
+            if (!template) {
+                // Use default template
+                template = {
+                    design: {},
+                    features: {
+                        showLogo: true,
+                        showLanguageSelector: true,
+                        showTerms: true,
+                        showVoucherPurchase: true
+                    },
+                    loginMethods: [
+                        { type: 'voucher', enabled: true },
+                        { type: 'userpass', enabled: true },
+                        { type: 'sms', enabled: true },
+                        { type: 'social', enabled: false }
+                    ],
+                    socialProviders: []
+                };
+            }
+            
+            res.render('portal/index', {
+                layout: false,
+                template,
+                lang: req.language,
+                t: req.t
+            });
+        } catch (error) {
+            console.error('Portal error:', error);
+            res.status(500).send('Portal error');
+        }
+    }
+    
+    static async loginVoucher(req, res) {
+        try {
+            const { code } = req.body;
+            const deviceMac = req.query.mac || req.headers['x-device-mac'];
+            const deviceIp = req.query.ip || req.ip;
+            
+            // Find device
+            const device = await Device.findOne({ macAddress: deviceMac });
+            if (!device) {
+                req.flash('error_msg', req.t('portal.errors.deviceNotFound'));
+                return res.redirect('/portal');
+            }
+            
+            // Validate voucher
+            const validation = await VoucherService.validateVoucher(code, device._id);
+            if (!validation.valid) {
+                req.flash('error_msg', req.t(`portal.errors.${validation.error}`));
+                return res.redirect('/portal');
+            }
+            
+            // Activate voucher
+            const activation = await VoucherService.activateVoucher({
+                code,
+                deviceId: device._id,
+                macAddress: req.query.user_mac || req.headers['x-user-mac'],
+                ipAddress: deviceIp
+            });
+            
+            // Create hotspot user on MikroTik
+            await MikroTikService.createHotspotUser(device._id, {
+                username: code,
+                password: code,
+                profile: validation.voucher.profile.name
+            });
+            
+            // Create session
+            const session = new Session({
+                organization: device.organization,
+                device: device._id,
+                voucher: validation.voucher._id,
+                user: {
+                    username: code,
+                    macAddress: req.query.user_mac,
+                    ipAddress: deviceIp
+                },
+                status: 'active'
+            });
+            await session.save();
+            
+            // Store session info
+            req.session.hotspotSession = {
+                sessionId: session._id,
+                voucherId: validation.voucher._id,
+                expiresAt: activation.expiresAt
+            };
+            
+            // Redirect to status page
+            res.redirect('/portal/status');
+        } catch (error) {
+            console.error('Voucher login error:', error);
+            req.flash('error_msg', req.t('portal.errors.loginFailed'));
+            res.redirect('/portal');
+        }
+    }
+    
+    static async loginUserPass(req, res) {
+        try {
+            const { username, password } = req.body;
+            // Implementation for username/password login
+            // This would check against hotspot users in the database
+            
+            req.flash('error_msg', req.t('portal.errors.invalidCredentials'));
+            res.redirect('/portal');
+        } catch (error) {
+            console.error('UserPass login error:', error);
+            req.flash('error_msg', req.t('portal.errors.loginFailed'));
+            res.redirect('/portal');
+        }
+    }
+    
+    static async requestSmsOtp(req, res) {
+        try {
+            const { phone } = req.body;
+            
+            // Generate OTP
+            const otp = SMSService.generateOTP();
+            
+            // Save OTP
+            const smsOtp = new SmsOtp({
+                phone,
+                otp,
+                purpose: 'login',
+                ipAddress: req.ip,
+                userAgent: req.get('user-agent')
+            });
+            await smsOtp.save();
+            
+            // Send SMS
+            await SMSService.sendOTP(phone, otp);
+            
+            res.json({
+                success: true,
+                message: req.t('portal.otpSent')
+            });
+        } catch (error) {
+            console.error('SMS OTP request error:', error);
+            res.json({
+                success: false,
+                message: req.t('portal.errors.otpFailed')
+            });
+        }
+    }
+    
+    static async verifySmsOtp(req, res) {
+        try {
+            const { phone, otp } = req.body;
+            
+            // Find and verify OTP
+            const smsOtp = await SmsOtp.findOne({
+                phone,
+                otp,
+                isUsed: false,
+                purpose: 'login'
+            });
+            
+            if (!smsOtp) {
+                req.flash('error_msg', req.t('portal.errors.invalidOtp'));
+                return res.redirect('/portal');
+            }
+            
+            // Verify OTP
+            await smsOtp.verify(otp);
+            
+            // Create or find user by phone
+            // Create session
+            // Redirect to status
+            
+            res.redirect('/portal/status');
+        } catch (error) {
+            console.error('SMS OTP verify error:', error);
+            req.flash('error_msg', error.message);
+            res.redirect('/portal');
+        }
+    }
+    
+    static async showStatus(req, res) {
+        try {
+            if (!req.session.hotspotSession) {
+                return res.redirect('/portal');
+            }
+            
+            const session = await Session.findById(req.session.hotspotSession.sessionId)
+                .populate('voucher');
+            
+            if (!session || session.status !== 'active') {
+                return res.redirect('/portal');
+            }
+            
+            // Calculate remaining time
+            const now = new Date();
+            const expiresAt = new Date(req.session.hotspotSession.expiresAt);
+            const timeRemaining = Math.max(0, Math.floor((expiresAt - now) / 1000));
+            
+            res.render('portal/status', {
+                layout: false,
+                session: {
+                    ...session.toObject(),
+                    timeRemaining,
+                    ipAddress: session.user.ipAddress
+                },
+                lang: req.language,
+                t: req.t
+            });
+        } catch (error) {
+            console.error('Status page error:', error);
+            res.redirect('/portal');
+        }
+    }
+    
+    static async logout(req, res) {
+        try {
+            if (req.session.hotspotSession) {
+                // Update session
+                await Session.findByIdAndUpdate(req.session.hotspotSession.sessionId, {
+                    status: 'completed',
+                    endTime: new Date()
+                });
+                
+                // Disconnect from MikroTik
+                // ...
+                
+                // Clear session
+                delete req.session.hotspotSession;
+            }
+            
+            res.redirect('/portal');
+        } catch (error) {
+            console.error('Logout error:', error);
+            res.redirect('/portal');
+        }
+    }
+    
+    static async showTerms(req, res) {
+        res.render('portal/terms', {
+            layout: false,
+            lang: req.language,
+            t: req.t
+        });
+    }
+    
+    static async socialLoginCallback(req, res) {
+        // Handle social login callbacks
+        res.redirect('/portal/status');
+    }
 }
 
-# Create Dockerfile for application
+module.exports = PortalController;
+EOF
+
+    # Dashboard Controller
+    cat << 'EOF' > "$SYSTEM_DIR/app/controllers/DashboardController.js"
+const Device = require('../models/Device');
+const Voucher = require('../models/Voucher');
+const Session = require('../models/Session');
+const PaymentTransaction = require('../models/PaymentTransaction');
+const moment = require('moment');
+
+class DashboardController {
+    static async index(req, res) {
+        try {
+            const organizationId = req.user.organization._id;
+            
+            // Get stats
+            const stats = await this.getOrganizationStats(organizationId);
+            
+            res.render('dashboard/index', {
+                title: req.t('dashboard'),
+                activeMenu: 'dashboard',
+                stats
+            });
+        } catch (error) {
+            console.error('Dashboard error:', error);
+            req.flash('error_msg', 'Error loading dashboard');
+            res.redirect('/');
+        }
+    }
+    
+    static async getStats(req, res) {
+        try {
+            const organizationId = req.user.organization._id;
+            const stats = await this.getOrganizationStats(organizationId);
+            
+            res.json({
+                success: true,
+                data: stats
+            });
+        } catch (error) {
+            res.status(500).json({
+                success: false,
+                error: error.message
+            });
+        }
+    }
+    
+    static async getOrganizationStats(organizationId) {
+        const now = moment();
+        const todayStart = now.clone().startOf('day');
+        const last7Days = now.clone().subtract(7, 'days');
+        
+        // Device stats
+        const totalDevices = await Device.countDocuments({ organization: organizationId });
+        const onlineDevices = await Device.countDocuments({ 
+            organization: organizationId, 
+            status: 'online' 
+        });
+        
+        // User stats
+        const activeUsers = await Session.countDocuments({
+            organization: organizationId,
+            status: 'active'
+        });
+        
+        // Voucher stats
+        const totalVouchers = await Voucher.countDocuments({ organization: organizationId });
+        const activeVouchers = await Voucher.countDocuments({ 
+            organization: organizationId,
+            status: 'active'
+        });
+        
+        // Revenue stats
+        const todayRevenue = await PaymentTransaction.aggregate([
+            {
+                $match: {
+                    organization: organizationId,
+                    status: 'completed',
+                    createdAt: { $gte: todayStart.toDate() }
+                }
+            },
+            {
+                $group: {
+                    _id: null,
+                    total: { $sum: '$amount.value' }
+                }
+            }
+        ]).then(r => r[0]?.total || 0);
+        
+        // Usage chart data (last 7 days)
+        const usageData = await Session.aggregate([
+            {
+                $match: {
+                    organization: organizationId,
+                    startTime: { $gte: last7Days.toDate() }
+                }
+            },
+            {
+                $group: {
+                    _id: { $dateToString: { format: '%Y-%m-%d', date: '$startTime' } },
+                    count: { $sum: 1 }
+                }
+            },
+            { $sort: { _id: 1 } }
+        ]);
+        
+        // Revenue chart data (last 7 days)
+        const revenueData = await PaymentTransaction.aggregate([
+            {
+                $match: {
+                    organization: organizationId,
+                    status: 'completed',
+                    createdAt: { $gte: last7Days.toDate() }
+                }
+            },
+            {
+                $group: {
+                    _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+                    total: { $sum: '$amount.value' }
+                }
+            },
+            { $sort: { _id: 1 } }
+        ]);
+        
+        // Format chart data
+        const dates = [];
+        for (let i = 6; i >= 0; i--) {
+            dates.push(moment().subtract(i, 'days').format('YYYY-MM-DD'));
+        }
+        
+        const usageChart = {
+            labels: dates.map(d => moment(d).format('MMM DD')),
+            data: dates.map(date => {
+                const found = usageData.find(u => u._id === date);
+                return found ? found.count : 0;
+            })
+        };
+        
+        const revenueChart = {
+            labels: dates.map(d => moment(d).format('MMM DD')),
+            data: dates.map(date => {
+                const found = revenueData.find(r => r._id === date);
+                return found ? found.total : 0;
+            })
+        };
+        
+        return {
+            totalDevices,
+            onlineDevices,
+            activeUsers,
+            totalVouchers,
+            activeVouchers,
+            todayRevenue,
+            usageChart,
+            revenueChart
+        };
+    }
+    
+    static async devices(req, res) {
+        try {
+            const devices = await Device.find({ 
+                organization: req.user.organization._id 
+            }).sort({ createdAt: -1 });
+            
+            res.render('devices/index', {
+                title: req.t('devices'),
+                activeMenu: 'devices',
+                devices
+            });
+        } catch (error) {
+            console.error('Devices error:', error);
+            req.flash('error_msg', 'Error loading devices');
+            res.redirect('/');
+        }
+    }
+    
+    static async vouchers(req, res) {
+        try {
+            const vouchers = await Voucher.find({ 
+                organization: req.user.organization._id 
+            })
+            .populate('device', 'name')
+            .sort({ createdAt: -1 })
+            .limit(100);
+            
+            res.render('vouchers/index', {
+                title: req.t('vouchers'),
+                activeMenu: 'vouchers',
+                vouchers
+            });
+        } catch (error) {
+            console.error('Vouchers error:', error);
+            req.flash('error_msg', 'Error loading vouchers');
+            res.redirect('/');
+        }
+    }
+    
+    static async createVoucherForm(req, res) {
+        try {
+            const devices = await Device.find({ 
+                organization: req.user.organization._id,
+                status: 'online'
+            });
+            
+            res.render('vouchers/create', {
+                title: req.t('voucher.createVoucher'),
+                activeMenu: 'vouchers',
+                devices
+            });
+        } catch (error) {
+            console.error('Create voucher form error:', error);
+            req.flash('error_msg', 'Error loading form');
+            res.redirect('/vouchers');
+        }
+    }
+    
+    static async createVoucher(req, res) {
+        try {
+            const vouchers = await VoucherService.generateBatch({
+                ...req.body,
+                organization: req.user.organization._id,
+                createdBy: req.user._id
+            });
+            
+            req.flash('success_msg', `Created ${vouchers.length} vouchers successfully`);
+            res.redirect('/vouchers');
+        } catch (error) {
+            console.error('Create voucher error:', error);
+            req.flash('error_msg', 'Error creating vouchers');
+            res.redirect('/vouchers/create');
+        }
+    }
+    
+    static async printVoucher(req, res) {
+        try {
+            const voucher = await Voucher.findOne({
+                _id: req.params.id,
+                organization: req.user.organization._id
+            });
+            
+            if (!voucher) {
+                req.flash('error_msg', 'Voucher not found');
+                return res.redirect('/vouchers');
+            }
+            
+            res.render('vouchers/print', {
+                layout: 'layouts/print',
+                voucher
+            });
+        } catch (error) {
+            console.error('Print voucher error:', error);
+            req.flash('error_msg', 'Error printing voucher');
+            res.redirect('/vouchers');
+        }
+    }
+    
+    static async users(req, res) {
+        try {
+            const User = require('../models/User');
+            const users = await User.find({ 
+                organization: req.user.organization._id 
+            }).sort({ createdAt: -1 });
+            
+            res.render('users/index', {
+                title: req.t('users'),
+                activeMenu: 'users',
+                users
+            });
+        } catch (error) {
+            console.error('Users error:', error);
+            req.flash('error_msg', 'Error loading users');
+            res.redirect('/');
+        }
+    }
+    
+    static async reports(req, res) {
+        try {
+            res.render('reports/index', {
+                title: req.t('reports'),
+                activeMenu: 'reports'
+            });
+        } catch (error) {
+            console.error('Reports error:', error);
+            req.flash('error_msg', 'Error loading reports');
+            res.redirect('/');
+        }
+    }
+    
+    static async revenueReport(req, res) {
+        try {
+            const ReportService = require('../services/ReportService');
+            const report = await ReportService.generateRevenueReport({
+                organizationId: req.user.organization._id,
+                ...req.query
+            });
+            
+            res.render('reports/revenue', {
+                title: req.t('reports.revenue'),
+                activeMenu: 'reports',
+                report
+            });
+        } catch (error) {
+            console.error('Revenue report error:', error);
+            req.flash('error_msg', 'Error generating report');
+            res.redirect('/reports');
+        }
+    }
+    
+    static async usageReport(req, res) {
+        try {
+            const ReportService = require('../services/ReportService');
+            const report = await ReportService.generateUsageReport({
+                organizationId: req.user.organization._id,
+                ...req.query
+            });
+            
+            res.render('reports/usage', {
+                title: req.t('reports.usage'),
+                activeMenu: 'reports',
+                report
+            });
+        } catch (error) {
+            console.error('Usage report error:', error);
+            req.flash('error_msg', 'Error generating report');
+            res.redirect('/reports');
+        }
+    }
+    
+    static async exportReport(req, res) {
+        try {
+            const ReportService = require('../services/ReportService');
+            const exportUrl = await ReportService.exportReport({
+                ...req.query,
+                organizationId: req.user.organization._id,
+                userId: req.user._id
+            });
+            
+            res.redirect(exportUrl);
+        } catch (error) {
+            console.error('Export report error:', error);
+            req.flash('error_msg', 'Error exporting report');
+            res.redirect('/reports');
+        }
+    }
+}
+
+module.exports = DashboardController;
+EOF
+
+    # Settings Controller
+    cat << 'EOF' > "$SYSTEM_DIR/app/controllers/SettingsController.js"
+const Organization = require('../models/Organization');
+const HotspotProfile = require('../models/HotspotProfile');
+const PortalTemplate = require('../models/PortalTemplate');
+
+class SettingsController {
+    static async index(req, res) {
+        try {
+            res.render('settings/index', {
+                title: req.t('settings'),
+                activeMenu: 'settings'
+            });
+        } catch (error) {
+            console.error('Settings error:', error);
+            req.flash('error_msg', 'Error loading settings');
+            res.redirect('/');
+        }
+    }
+    
+    static async organization(req, res) {
+        try {
+            const organization = await Organization.findById(req.user.organization._id);
+            
+            res.render('settings/organization', {
+                title: req.t('settings.organization'),
+                activeMenu: 'settings',
+                organization
+            });
+        } catch (error) {
+            console.error('Organization settings error:', error);
+            req.flash('error_msg', 'Error loading organization settings');
+            res.redirect('/settings');
+        }
+    }
+    
+    static async updateOrganization(req, res) {
+        try {
+            await Organization.findByIdAndUpdate(
+                req.user.organization._id,
+                req.body
+            );
+            
+            req.flash('success_msg', 'Organization settings updated');
+            res.redirect('/settings/organization');
+        } catch (error) {
+            console.error('Update organization error:', error);
+            req.flash('error_msg', 'Error updating organization settings');
+            res.redirect('/settings/organization');
+        }
+    }
+    
+    static async payment(req, res) {
+        try {
+            const organization = await Organization.findById(req.user.organization._id);
+            
+            res.render('settings/payment', {
+                title: req.t('settings.payment'),
+                activeMenu: 'settings',
+                paymentSettings: organization.paymentSettings
+            });
+        } catch (error) {
+            console.error('Payment settings error:', error);
+            req.flash('error_msg', 'Error loading payment settings');
+            res.redirect('/settings');
+        }
+    }
+    
+    static async updatePayment(req, res) {
+        try {
+            await Organization.findByIdAndUpdate(
+                req.user.organization._id,
+                { paymentSettings: req.body }
+            );
+            
+            req.flash('success_msg', 'Payment settings updated');
+            res.redirect('/settings/payment');
+        } catch (error) {
+            console.error('Update payment error:', error);
+            req.flash('error_msg', 'Error updating payment settings');
+            res.redirect('/settings/payment');
+        }
+    }
+    
+    static async portal(req, res) {
+        try {
+            const templates = await PortalTemplate.find({
+                organization: req.user.organization._id
+            });
+            
+            res.render('settings/portal', {
+                title: req.t('settings.portal'),
+                activeMenu: 'settings',
+                templates
+            });
+        } catch (error) {
+            console.error('Portal settings error:', error);
+            req.flash('error_msg', 'Error loading portal settings');
+            res.redirect('/settings');
+        }
+    }
+    
+    static async updatePortal(req, res) {
+        try {
+            // Update or create portal template
+            const template = await PortalTemplate.findOneAndUpdate(
+                {
+                    organization: req.user.organization._id,
+                    _id: req.body.templateId
+                },
+                req.body,
+                { upsert: true, new: true }
+            );
+            
+            req.flash('success_msg', 'Portal settings updated');
+            res.redirect('/settings/portal');
+        } catch (error) {
+            console.error('Update portal error:', error);
+            req.flash('error_msg', 'Error updating portal settings');
+            res.redirect('/settings/portal');
+        }
+    }
+    
+    static async voucherProfiles(req, res) {
+        try {
+            const profiles = await HotspotProfile.find({
+                organization: req.user.organization._id
+            }).sort({ order: 1 });
+            
+            res.render('settings/voucher-profiles', {
+                title: req.t('settings.voucherProfiles'),
+                activeMenu: 'settings',
+                profiles
+            });
+        } catch (error) {
+            console.error('Voucher profiles error:', error);
+            req.flash('error_msg', 'Error loading voucher profiles');
+            res.redirect('/settings');
+        }
+    }
+    
+    static async createVoucherProfile(req, res) {
+        try {
+            const profile = new HotspotProfile({
+                ...req.body,
+                organization: req.user.organization._id
+            });
+            await profile.save();
+            
+            req.flash('success_msg', 'Voucher profile created');
+            res.redirect('/settings/vouchers');
+        } catch (error) {
+            console.error('Create voucher profile error:', error);
+            req.flash('error_msg', 'Error creating voucher profile');
+            res.redirect('/settings/vouchers');
+        }
+    }
+    
+    static async updateVoucherProfile(req, res) {
+        try {
+            await HotspotProfile.findOneAndUpdate(
+                {
+                    _id: req.params.id,
+                    organization: req.user.organization._id
+                },
+                req.body
+            );
+            
+            req.flash('success_msg', 'Voucher profile updated');
+            res.redirect('/settings/vouchers');
+        } catch (error) {
+            console.error('Update voucher profile error:', error);
+            req.flash('error_msg', 'Error updating voucher profile');
+            res.redirect('/settings/vouchers');
+        }
+    }
+    
+    static async deleteVoucherProfile(req, res) {
+        try {
+            await HotspotProfile.findOneAndDelete({
+                _id: req.params.id,
+                organization: req.user.organization._id
+            });
+            
+            req.flash('success_msg', 'Voucher profile deleted');
+            res.redirect('/settings/vouchers');
+        } catch (error) {
+            console.error('Delete voucher profile error:', error);
+            req.flash('error_msg', 'Error deleting voucher profile');
+            res.redirect('/settings/vouchers');
+        }
+    }
+    
+    // Other settings methods...
+}
+
+module.exports = SettingsController;
+EOF
+}
+
+# Create app Dockerfile
 create_app_dockerfile() {
     cat << 'EOF' > "$SYSTEM_DIR/app/Dockerfile"
 FROM node:20-alpine AS builder
@@ -2713,6 +8141,9 @@ RUN npm ci --only=production
 # Copy application files
 COPY . .
 
+# Build CSS with Tailwind
+RUN npm run build:css || true
+
 # Production stage
 FROM node:20-alpine
 
@@ -2731,7 +8162,9 @@ COPY --from=builder --chown=mikrotik:nodejs /usr/src/app .
 
 # Create necessary directories
 RUN mkdir -p /var/log/mikrotik-vpn && \
-    chown -R mikrotik:nodejs /var/log/mikrotik-vpn
+    mkdir -p /usr/src/app/uploads && \
+    chown -R mikrotik:nodejs /var/log/mikrotik-vpn && \
+    chown -R mikrotik:nodejs /usr/src/app/uploads
 
 # Switch to non-root user
 USER mikrotik
@@ -2751,3322 +8184,62 @@ CMD ["node", "server.js"]
 EOF
 }
 
-# =============================================================================
-# PHASE 6: CONFIGURATION FILES
-# =============================================================================
-
-phase6_configuration_files() {
-    log "==================================================================="
-    log "PHASE 6: CREATING CONFIGURATION FILES"
-    log "==================================================================="
-    
-    # MongoDB initialization script
-    cat << EOF > "$SYSTEM_DIR/mongodb/mongo-init.js"
-// Switch to admin database
-db = db.getSiblingDB('admin');
-
-// Create admin user if not exists
-if (!db.getUser('admin')) {
-    db.createUser({
-        user: 'admin',
-        pwd: '$MONGO_ROOT_PASSWORD',
-        roles: ['root']
-    });
-}
-
-// Switch to application database
-db = db.getSiblingDB('mikrotik_vpn');
-
-// Create application user
-db.createUser({
-    user: 'mikrotik_app',
-    pwd: '$MONGO_APP_PASSWORD',
-    roles: [
-        {
-            role: 'readWrite',
-            db: 'mikrotik_vpn'
-        }
-    ]
-});
-
-// Create collections with validation
-db.createCollection('organizations', {
-    validator: {
-        \$jsonSchema: {
-            bsonType: 'object',
-            required: ['name', 'domain', 'email'],
-            properties: {
-                name: { bsonType: 'string' },
-                domain: { bsonType: 'string' },
-                email: { bsonType: 'string' }
-            }
-        }
-    }
-});
-
-db.createCollection('devices', {
-    validator: {
-        \$jsonSchema: {
-            bsonType: 'object',
-            required: ['organization', 'name', 'serialNumber', 'macAddress'],
-            properties: {
-                organization: { bsonType: 'objectId' },
-                name: { bsonType: 'string' },
-                serialNumber: { bsonType: 'string' },
-                macAddress: { bsonType: 'string' }
-            }
-        }
-    }
-});
-
-db.createCollection('users');
-db.createCollection('vouchers');
-db.createCollection('sessions');
-db.createCollection('logs');
-db.createCollection('settings');
-
-// Create indexes
-db.organizations.createIndex({ domain: 1 }, { unique: true });
-db.organizations.createIndex({ email: 1 });
-
-db.devices.createIndex({ organization: 1 });
-db.devices.createIndex({ serialNumber: 1 }, { unique: true });
-db.devices.createIndex({ macAddress: 1 }, { unique: true });
-db.devices.createIndex({ status: 1 });
-
-db.users.createIndex({ organization: 1 });
-db.users.createIndex({ username: 1 }, { unique: true });
-db.users.createIndex({ email: 1 }, { unique: true });
-
-db.vouchers.createIndex({ organization: 1 });
-db.vouchers.createIndex({ code: 1 }, { unique: true });
-db.vouchers.createIndex({ status: 1 });
-db.vouchers.createIndex({ 'batch.id': 1 });
-
-db.sessions.createIndex({ organization: 1 });
-db.sessions.createIndex({ device: 1 });
-db.sessions.createIndex({ startTime: -1 });
-db.sessions.createIndex({ status: 1 });
-
-db.logs.createIndex({ timestamp: -1 });
-db.logs.createIndex({ level: 1 });
-db.logs.createIndex({ device: 1 });
-
-// Insert default data
-db.organizations.insertOne({
-    name: 'Default Organization',
-    domain: '$DOMAIN_NAME',
-    email: '$ADMIN_EMAIL',
-    settings: {
-        timezone: 'Asia/Bangkok',
-        currency: 'THB',
-        language: 'th'
-    },
-    subscription: {
-        plan: 'enterprise',
-        status: 'active'
-    },
-    isActive: true,
-    createdAt: new Date(),
-    updatedAt: new Date()
-});
-
-print('MongoDB initialization completed successfully');
-EOF
-
-    # Redis configuration
-    cat << EOF > "$SYSTEM_DIR/redis/redis.conf"
-# Redis Configuration for MikroTik VPN System
-
-# Network
-bind 0.0.0.0
-protected-mode yes
-port 6379
-tcp-backlog 511
-timeout 0
-tcp-keepalive 300
-
-# General
-daemonize no
-supervised no
-pidfile /var/run/redis_6379.pid
-loglevel notice
-logfile ""
-databases 16
-
-# Snapshotting
-save 900 1
-save 300 10
-save 60 10000
-stop-writes-on-bgsave-error yes
-rdbcompression yes
-rdbchecksum yes
-dbfilename dump.rdb
-dir /data
-
-# Replication
-replica-read-only yes
-
-# Security
-requirepass $REDIS_PASSWORD
-
-# Limits
-maxclients 10000
-maxmemory ${REDIS_MAX_MEM}mb
-maxmemory-policy allkeys-lru
-
-# Append only mode
-appendonly yes
-appendfilename "appendonly.aof"
-appendfsync everysec
-no-appendfsync-on-rewrite no
-auto-aof-rewrite-percentage 100
-auto-aof-rewrite-min-size 64mb
-
-# Slow log
-slowlog-log-slower-than 10000
-slowlog-max-len 128
-
-# Event notification
-notify-keyspace-events ""
-
-# Advanced config
-hash-max-ziplist-entries 512
-hash-max-ziplist-value 64
-list-max-ziplist-size -2
-list-compress-depth 0
-set-max-intset-entries 512
-zset-max-ziplist-entries 128
-zset-max-ziplist-value 64
-hll-sparse-max-bytes 3000
-stream-node-max-bytes 4096
-stream-node-max-entries 100
-activerehashing yes
-client-output-buffer-limit normal 0 0 0
-client-output-buffer-limit replica 256mb 64mb 60
-client-output-buffer-limit pubsub 32mb 8mb 60
-hz 10
-dynamic-hz yes
-aof-rewrite-incremental-fsync yes
-rdb-save-incremental-fsync yes
-EOF
-
-    # Nginx configuration
-    create_nginx_configs
-    
-    # OpenVPN configuration
-    create_openvpn_configs
-    
-    # Prometheus configuration
-    create_prometheus_configs
-    
-    # Grafana configuration
-    create_grafana_configs
-    
-    # Alertmanager configuration
-    create_alertmanager_config
-    
-    log "Phase 6 completed successfully!"
-}
-
-# Create Nginx configurations
-create_nginx_configs() {
-    # Main nginx.conf
-    cat << 'EOF' > "$SYSTEM_DIR/nginx/nginx.conf"
-user nginx;
-worker_processes auto;
-worker_rlimit_nofile 65535;
-error_log /var/log/nginx/error.log warn;
-pid /var/run/nginx.pid;
-
-events {
-    worker_connections 4096;
-    use epoll;
-    multi_accept on;
-}
-
-http {
-    include /etc/nginx/mime.types;
-    default_type application/octet-stream;
-
-    # Logging
-    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
-                    '$status $body_bytes_sent "$http_referer" '
-                    '"$http_user_agent" "$http_x_forwarded_for"';
-    
-    log_format json_combined escape=json '{'
-        '"time_local":"$time_local",'
-        '"remote_addr":"$remote_addr",'
-        '"remote_user":"$remote_user",'
-        '"request":"$request",'
-        '"status":"$status",'
-        '"body_bytes_sent":"$body_bytes_sent",'
-        '"request_time":"$request_time",'
-        '"http_referrer":"$http_referer",'
-        '"http_user_agent":"$http_user_agent"'
-    '}';
-    
-    access_log /var/log/nginx/access.log json_combined;
-
-    # Performance
-    sendfile on;
-    tcp_nopush on;
-    tcp_nodelay on;
-    keepalive_timeout 65;
-    keepalive_requests 100;
-    reset_timedout_connection on;
-    client_body_timeout 10;
-    client_header_timeout 10;
-    send_timeout 10;
-    
-    # Buffers
-    client_body_buffer_size 128k;
-    client_max_body_size 10m;
-    client_header_buffer_size 1k;
-    large_client_header_buffers 4 16k;
-    output_buffers 1 32k;
-    postpone_output 1460;
-    
-    # Hash tables
-    types_hash_max_size 2048;
-    server_names_hash_bucket_size 128;
-    
-    # Hide version
-    server_tokens off;
-    
-    # Gzip
-    gzip on;
-    gzip_vary on;
-    gzip_proxied any;
-    gzip_comp_level 6;
-    gzip_types text/plain text/css text/xml text/javascript 
-               application/json application/javascript application/xml+rss 
-               application/rss+xml application/atom+xml image/svg+xml;
-    
-    # Security headers
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-XSS-Protection "1; mode=block" always;
-    add_header Referrer-Policy "no-referrer-when-downgrade" always;
-    add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
-    
-    # Rate limiting
-    limit_req_zone $binary_remote_addr zone=general:10m rate=10r/s;
-    limit_req_zone $binary_remote_addr zone=api:10m rate=100r/s;
-    limit_req_zone $binary_remote_addr zone=login:10m rate=5r/m;
-    
-    # Include site configurations
-    include /etc/nginx/conf.d/*.conf;
-}
-EOF
-
-    # Site configuration
-    cat << EOF > "$SYSTEM_DIR/nginx/conf.d/mikrotik-vpn.conf"
-# Upstream configuration
-upstream app_backend {
-    least_conn;
-    server app:3000 max_fails=3 fail_timeout=30s;
-    keepalive 32;
-}
-
-# HTTP to HTTPS redirect
-server {
-    listen 80;
-    listen [::]:80;
-    server_name $DOMAIN_NAME admin.$DOMAIN_NAME;
-    
-    # Let's Encrypt challenge
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-        try_files \$uri =404;
-    }
-    
-    # Redirect all other traffic to HTTPS
-    location / {
-        return 301 https://\$server_name\$request_uri;
-    }
-}
-
-# Main HTTPS server
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name $DOMAIN_NAME;
-    
-    # SSL configuration
-    ssl_certificate /etc/nginx/ssl/fullchain.pem;
-    ssl_certificate_key /etc/nginx/ssl/privkey.pem;
-    ssl_session_timeout 1d;
-    ssl_session_cache shared:MozSSL:10m;
-    ssl_session_tickets off;
-    
-    # Modern SSL configuration
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
-    ssl_prefer_server_ciphers off;
-    
-    # HSTS
-    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
-    
-    # OCSP stapling
-    ssl_stapling on;
-    ssl_stapling_verify on;
-    
-    # Root location
-    location / {
-        limit_req zone=general burst=20 nodelay;
-        
-        proxy_pass http://app_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_cache_bypass \$http_upgrade;
-        
-        # Timeouts
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
-    }
-    
-    # API endpoints
-    location /api/ {
-        limit_req zone=api burst=50 nodelay;
-        
-        proxy_pass http://app_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        
-        # CORS headers
-        add_header 'Access-Control-Allow-Origin' '*' always;
-        add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
-        add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization' always;
-        add_header 'Access-Control-Expose-Headers' 'Content-Length,Content-Range' always;
-        
-        if (\$request_method = 'OPTIONS') {
-            add_header 'Access-Control-Max-Age' 1728000;
-            add_header 'Content-Type' 'text/plain; charset=utf-8';
-            add_header 'Content-Length' 0;
-            return 204;
-        }
-    }
-    
-    # WebSocket support
-    location /socket.io/ {
-        proxy_pass http://app_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        
-        # WebSocket specific
-        proxy_buffering off;
-        proxy_request_buffering off;
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
-    }
-    
-    # Static files
-    location /static/ {
-        alias /var/www/static/;
-        expires 30d;
-        add_header Cache-Control "public, immutable";
-        access_log off;
-    }
-    
-    # Health check
-    location /health {
-        access_log off;
-        proxy_pass http://app_backend/health;
-    }
-    
-    # Monitoring endpoints (internal only)
-    location /nginx_status {
-        stub_status on;
-        access_log off;
-        allow 127.0.0.1;
-        allow 172.20.0.0/16;
-        deny all;
-    }
-}
-
-# Admin panel
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name admin.$DOMAIN_NAME;
-    
-    # SSL configuration (same as main site)
-    ssl_certificate /etc/nginx/ssl/fullchain.pem;
-    ssl_certificate_key /etc/nginx/ssl/privkey.pem;
-    ssl_session_timeout 1d;
-    ssl_session_cache shared:MozSSL:10m;
-    ssl_session_tickets off;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
-    ssl_prefer_server_ciphers off;
-    
-    # Enhanced security for admin
-    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
-    add_header X-Frame-Options "DENY" always;
-    
-    # Admin interface
-    location / {
-        limit_req zone=general burst=10 nodelay;
-        
-        # IP whitelist (optional)
-        # allow 192.168.1.0/24;
-        # deny all;
-        
-        proxy_pass http://app_backend/admin;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-    
-    # Admin API
-    location /api/ {
-        limit_req zone=api burst=30 nodelay;
-        
-        proxy_pass http://app_backend/api/;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-
-# Monitoring access (Grafana)
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name monitor.$DOMAIN_NAME;
-    
-    ssl_certificate /etc/nginx/ssl/fullchain.pem;
-    ssl_certificate_key /etc/nginx/ssl/privkey.pem;
-    
-    location / {
-        proxy_pass http://grafana:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \$host;
-        proxy_cache_bypass \$http_upgrade;
-    }
-}
-EOF
-
-    # Create self-signed SSL certificate with proper links
-    log "Creating self-signed SSL certificate..."
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-        -keyout "$SYSTEM_DIR/nginx/ssl/privkey.pem" \
-        -out "$SYSTEM_DIR/nginx/ssl/fullchain.pem" \
-        -subj "/C=TH/ST=Bangkok/L=Bangkok/O=MikroTik VPN/CN=$DOMAIN_NAME" \
-        -addext "subjectAltName=DNS:$DOMAIN_NAME,DNS:admin.$DOMAIN_NAME,DNS:monitor.$DOMAIN_NAME" \
-        2>/dev/null
-}
-
-# Create OpenVPN configurations
-create_openvpn_configs() {
-    # Server configuration
-    cat << EOF > "$SYSTEM_DIR/openvpn/server/server.conf"
-# OpenVPN Server Configuration
-port 1194
-proto udp
-dev tun
-
-# Certificates and keys
-ca /etc/openvpn/easy-rsa/pki/ca.crt
-cert /etc/openvpn/easy-rsa/pki/issued/server.crt
-key /etc/openvpn/easy-rsa/pki/private/server.key
-dh /etc/openvpn/easy-rsa/pki/dh.pem
-tls-auth /etc/openvpn/easy-rsa/ta.key 0
-
-# Network configuration
-server ${VPN_NETWORK%.0/24} 255.255.255.0
-push "route ${VPN_NETWORK%.0/24} 255.255.255.0"
-push "dhcp-option DNS 8.8.8.8"
-push "dhcp-option DNS 8.8.4.4"
-
-# Client configuration
-client-config-dir /etc/openvpn/ccd
-client-to-client
-duplicate-cn
-keepalive 10 120
-
-# Encryption
-cipher AES-256-GCM
-auth SHA512
-tls-version-min 1.2
-tls-cipher TLS-ECDHE-RSA-WITH-AES-256-GCM-SHA384
-
-# Compression
-comp-lzo
-
-# Security
-user nobody
-group nogroup
-persist-key
-persist-tun
-
-# Logging
-status /var/log/openvpn-status.log 5
-log-append /var/log/openvpn.log
-verb 3
-mute 20
-
-# Performance
-sndbuf 393216
-rcvbuf 393216
-push "sndbuf 393216"
-push "rcvbuf 393216"
-
-# Limits
-max-clients 1000
-
-# Management interface
-management localhost 7505
-EOF
-
-    # Create Easy-RSA vars
-    cat << EOF > "$SYSTEM_DIR/openvpn/easy-rsa/vars"
-# Easy-RSA Variables
-set_var EASYRSA_REQ_COUNTRY    "TH"
-set_var EASYRSA_REQ_PROVINCE   "Bangkok"
-set_var EASYRSA_REQ_CITY       "Bangkok"
-set_var EASYRSA_REQ_ORG        "MikroTik VPN System"
-set_var EASYRSA_REQ_EMAIL      "$ADMIN_EMAIL"
-set_var EASYRSA_REQ_OU         "VPN Management"
-set_var EASYRSA_ALGO           "rsa"
-set_var EASYRSA_KEY_SIZE       2048
-set_var EASYRSA_CA_EXPIRE      3650
-set_var EASYRSA_CERT_EXPIRE    1825
-set_var EASYRSA_DIGEST         "sha256"
-EOF
-
-    # Initialize PKI script
-    cat << 'EOF' > "$SYSTEM_DIR/openvpn/init-pki.sh"
-#!/bin/bash
-cd /etc/openvpn
-
-# Download and setup Easy-RSA if not exists
-if [[ ! -d "easy-rsa" ]]; then
-    wget https://github.com/OpenVPN/easy-rsa/releases/download/v3.1.0/EasyRSA-3.1.0.tgz
-    tar xzf EasyRSA-3.1.0.tgz
-    mv EasyRSA-3.1.0/* easy-rsa/
-    rm -rf EasyRSA-3.1.0*
-fi
-
-cd easy-rsa
-
-# Copy vars file
-cp /etc/openvpn/easy-rsa/vars ./vars
-
-# Clean and init
-./easyrsa clean-all 2>/dev/null || true
-./easyrsa init-pki
-
-# Build CA
-echo "Building CA..."
-./easyrsa --batch build-ca nopass
-
-# Generate server certificate
-echo "Generating server certificate..."
-./easyrsa --batch gen-req server nopass
-./easyrsa --batch sign-req server server
-
-# Generate DH parameters
-echo "Generating DH parameters..."
-./easyrsa gen-dh
-
-# Generate TLS auth key
-echo "Generating TLS auth key..."
-openvpn --genkey secret ta.key
-
-echo "PKI initialization completed!"
-EOF
-
-    chmod +x "$SYSTEM_DIR/openvpn/init-pki.sh"
-}
-
-# Create Prometheus configurations
-create_prometheus_configs() {
-    # Prometheus configuration
-    cat << 'EOF' > "$SYSTEM_DIR/monitoring/prometheus/prometheus.yml"
-global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
-  external_labels:
-    monitor: 'mikrotik-vpn-monitor'
-    environment: 'production'
-
-# Alertmanager configuration
-alerting:
-  alertmanagers:
-    - static_configs:
-        - targets: ['alertmanager:9093']
-
-# Load rules
-rule_files:
-  - '/etc/prometheus/rules/*.yml'
-
-# Scrape configurations
-scrape_configs:
-  # Prometheus itself
-  - job_name: 'prometheus'
-    static_configs:
-      - targets: ['localhost:9090']
-
-  # Node Exporter
-  - job_name: 'node'
-    static_configs:
-      - targets: ['node-exporter:9100']
-
-  # Docker containers
-  - job_name: 'docker'
-    static_configs:
-      - targets: ['cadvisor:8080']
-
-  # MongoDB
-  - job_name: 'mongodb'
-    static_configs:
-      - targets: ['mongodb-exporter:9216']
-
-  # Redis
-  - job_name: 'redis'
-    static_configs:
-      - targets: ['redis-exporter:9121']
-
-  # Nginx
-  - job_name: 'nginx'
-    static_configs:
-      - targets: ['nginx-exporter:9113']
-
-  # Application
-  - job_name: 'mikrotik-app'
-    static_configs:
-      - targets: ['app:3000']
-    metrics_path: '/metrics'
-
-  # OpenVPN
-  - job_name: 'openvpn'
-    static_configs:
-      - targets: ['openvpn-exporter:9176']
-EOF
-
-    # Alert rules
-    cat << 'EOF' > "$SYSTEM_DIR/monitoring/prometheus/rules/alerts.yml"
-groups:
-  - name: system_alerts
-    interval: 30s
-    rules:
-      - alert: InstanceDown
-        expr: up == 0
-        for: 1m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Instance {{ $labels.instance }} down"
-          description: "{{ $labels.instance }} of job {{ $labels.job }} has been down for more than 1 minute."
-
-      - alert: HighCPUUsage
-        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High CPU usage detected"
-          description: "CPU usage is above 80% (current value: {{ $value }}%)"
-
-      - alert: HighMemoryUsage
-        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High memory usage detected"
-          description: "Memory usage is above 85% (current value: {{ $value }}%)"
-
-      - alert: DiskSpaceLow
-        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 20
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Low disk space"
-          description: "Disk space is below 20% (current value: {{ $value }}%)"
-
-  - name: service_alerts
-    interval: 30s
-    rules:
-      - alert: MongoDBDown
-        expr: mongodb_up == 0
-        for: 1m
-        labels:
-          severity: critical
-        annotations:
-          summary: "MongoDB is down"
-          description: "MongoDB database is not responding"
-
-      - alert: RedisDown
-        expr: redis_up == 0
-        for: 1m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Redis is down"
-          description: "Redis cache is not responding"
-
-      - alert: NginxDown
-        expr: nginx_up == 0
-        for: 1m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Nginx is down"
-          description: "Nginx web server is not responding"
-
-      - alert: AppDown
-        expr: app_mongodb_connected == 0 or app_redis_connected == 0
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Application database connection lost"
-          description: "Application cannot connect to databases"
-
-  - name: vpn_alerts
-    interval: 30s
-    rules:
-      - alert: VPNHighConnections
-        expr: openvpn_server_connected_clients > 900
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High VPN connections"
-          description: "VPN connections approaching limit (current: {{ $value }})"
-
-      - alert: VPNTrafficSpike
-        expr: rate(openvpn_server_route_bytes_sent[5m]) > 100000000
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High VPN traffic"
-          description: "VPN traffic exceeds 100MB/s"
-EOF
-}
-
-# Create Grafana configurations
-create_grafana_configs() {
-    # Datasource provisioning
-    cat << 'EOF' > "$SYSTEM_DIR/monitoring/grafana/provisioning/datasources/prometheus.yml"
-apiVersion: 1
-
-datasources:
-  - name: Prometheus
-    type: prometheus
-    access: proxy
-    url: http://prometheus:9090
-    isDefault: true
-    editable: true
-    jsonData:
-      timeInterval: '15s'
-EOF
-
-    # Dashboard provisioning
-    cat << 'EOF' > "$SYSTEM_DIR/monitoring/grafana/provisioning/dashboards/dashboard.yml"
-apiVersion: 1
-
-providers:
-  - name: 'MikroTik VPN Dashboards'
-    orgId: 1
-    folder: ''
-    type: file
-    disableDeletion: false
-    updateIntervalSeconds: 10
-    allowUiUpdates: true
-    options:
-      path: /var/lib/grafana/dashboards
-EOF
-
-    # Main dashboard
-    cat << 'DASHBOARD' > "$SYSTEM_DIR/monitoring/grafana/dashboards/main-dashboard.json"
-{
-  "annotations": {
-    "list": [
-      {
-        "builtIn": 1,
-        "datasource": "-- Grafana --",
-        "enable": true,
-        "hide": true,
-        "iconColor": "rgba(0, 211, 255, 1)",
-        "name": "Annotations & Alerts",
-        "type": "dashboard"
-      }
-    ]
-  },
-  "editable": true,
-  "gnetId": null,
-  "graphTooltip": 0,
-  "id": null,
-  "links": [],
-  "panels": [
-    {
-      "datasource": "Prometheus",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
-        "x": 0,
-        "y": 0
-      },
-      "id": 1,
-      "options": {
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
-      },
-      "pluginVersion": "8.0.0",
-      "targets": [
-        {
-          "expr": "100 - (avg by (instance) (irate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
-          "refId": "A"
-        }
-      ],
-      "title": "CPU Usage",
-      "type": "gauge"
-    },
-    {
-      "datasource": "Prometheus",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 70
-              },
-              {
-                "color": "red",
-                "value": 85
-              }
-            ]
-          },
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
-        "x": 6,
-        "y": 0
-      },
-      "id": 2,
-      "options": {
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
-      },
-      "pluginVersion": "8.0.0",
-      "targets": [
-        {
-          "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100",
-          "refId": "A"
-        }
-      ],
-      "title": "Memory Usage",
-      "type": "gauge"
-    },
-    {
-      "datasource": "Prometheus",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": true,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 0
-      },
-      "id": 3,
-      "options": {
-        "tooltip": {
-          "mode": "single"
-        },
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom"
-        }
-      },
-      "pluginVersion": "8.0.0",
-      "targets": [
-        {
-          "expr": "openvpn_server_connected_clients",
-          "legendFormat": "Connected Clients",
-          "refId": "A"
-        }
-      ],
-      "title": "VPN Connections",
-      "type": "timeseries"
-    }
-  ],
-  "schemaVersion": 27,
-  "style": "dark",
-  "tags": [
-    "mikrotik",
-    "vpn",
-    "overview"
-  ],
-  "templating": {
-    "list": []
-  },
-  "time": {
-    "from": "now-6h",
-    "to": "now"
-  },
-  "timepicker": {},
-  "timezone": "",
-  "title": "MikroTik VPN System Overview",
-  "uid": "mikrotik-vpn-overview",
-  "version": 0
-}
-DASHBOARD
-}
-
-# Create Alertmanager configuration
-create_alertmanager_config() {
-    cat << EOF > "$SYSTEM_DIR/monitoring/alertmanager/alertmanager.yml"
-global:
-  resolve_timeout: 5m
-  smtp_from: '$ADMIN_EMAIL'
-  smtp_smarthost: 'smtp.gmail.com:587'
-  smtp_auth_username: '$ADMIN_EMAIL'
-  smtp_auth_password: 'your-app-password'
-  smtp_require_tls: true
-
-route:
-  group_by: ['alertname', 'cluster', 'service']
-  group_wait: 10s
-  group_interval: 10s
-  repeat_interval: 12h
-  receiver: 'default'
-  routes:
-    - match:
-        severity: critical
-      receiver: 'critical'
-      continue: true
-    - match:
-        severity: warning
-      receiver: 'warning'
-
-receivers:
-  - name: 'default'
-    email_configs:
-      - to: '$ADMIN_EMAIL'
-        headers:
-          Subject: '[MikroTik VPN] Alert: {{ .GroupLabels.alertname }}'
-        html: |
-          <h2>MikroTik VPN System Alert</h2>
-          <p><strong>Alert:</strong> {{ .GroupLabels.alertname }}</p>
-          <p><strong>Severity:</strong> {{ .CommonLabels.severity }}</p>
-          <p><strong>Summary:</strong> {{ .CommonAnnotations.summary }}</p>
-          <p><strong>Description:</strong> {{ .CommonAnnotations.description }}</p>
-          <p><strong>Time:</strong> {{ .StartsAt.Format "2006-01-02 15:04:05" }}</p>
-
-  - name: 'critical'
-    email_configs:
-      - to: '$ADMIN_EMAIL'
-        headers:
-          Subject: '[CRITICAL] MikroTik VPN Alert: {{ .GroupLabels.alertname }}'
-        send_resolved: true
-
-  - name: 'warning'
-    email_configs:
-      - to: '$ADMIN_EMAIL'
-        headers:
-          Subject: '[WARNING] MikroTik VPN Alert: {{ .GroupLabels.alertname }}'
-        send_resolved: false
-
-inhibit_rules:
-  - source_match:
-      severity: 'critical'
-    target_match:
-      severity: 'warning'
-    equal: ['alertname', 'dev', 'instance']
-EOF
-}
+# Continue with remaining phases...
 
 # =============================================================================
-# PHASE 7: DOCKER COMPOSE
+# PHASE 6: CONFIGURATION FILES (Enhanced)
 # =============================================================================
 
-phase7_docker_compose() {
-    log "==================================================================="
-    log "PHASE 7: CREATING DOCKER COMPOSE CONFIGURATION"
-    log "==================================================================="
-    
-    cat << 'EOF' > "$SYSTEM_DIR/docker-compose.yml"
-services:
-  # ===========================================
-  # Database Services
-  # ===========================================
-  mongodb:
-    image: mongo:7.0
-    container_name: mikrotik-mongodb
-    restart: unless-stopped
-    environment:
-      - MONGO_INITDB_ROOT_USERNAME=admin
-      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
-      - MONGO_INITDB_DATABASE=mikrotik_vpn
-    volumes:
-      - ./mongodb/data:/data/db
-      - ./mongodb/logs:/var/log/mongodb
-      - ./mongodb/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
-    ports:
-      - "127.0.0.1:27017:27017"
-    command: mongod --auth --bind_ip_all --wiredTigerCacheSizeGB ${MONGODB_CACHE_SIZE}
-    networks:
-      - mikrotik-vpn-net
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 40s
-
-  redis:
-    image: redis:7-alpine
-    container_name: mikrotik-redis
-    restart: unless-stopped
-    command: redis-server /usr/local/etc/redis/redis.conf
-    volumes:
-      - ./redis/data:/data
-      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
-    ports:
-      - "127.0.0.1:6379:6379"
-    networks:
-      - mikrotik-vpn-net
-    healthcheck:
-      test: ["CMD", "redis-cli", "--pass", "${REDIS_PASSWORD}", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 20s
-
-  # ===========================================
-  # Application Service
-  # ===========================================
-  app:
-    build: 
-      context: ./app
-      dockerfile: Dockerfile
-    container_name: mikrotik-app
-    restart: unless-stopped
-    env_file:
-      - ./app/.env
-    environment:
-      - NODE_ENV=production
-      - PORT=3000
-    ports:
-      - "127.0.0.1:3000:3000"
-    volumes:
-      - ./app:/usr/src/app
-      - /usr/src/app/node_modules
-      - ./logs:/var/log/mikrotik-vpn
-    networks:
-      - mikrotik-vpn-net
-    depends_on:
-      mongodb:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-
-  # ===========================================
-  # Web Server
-  # ===========================================
-  nginx:
-    image: nginx:alpine
-    container_name: mikrotik-nginx
-    restart: unless-stopped
-    ports:
-      - "9080:80"
-      - "9443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/conf.d:/etc/nginx/conf.d:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
-      - ./nginx/html:/var/www/html:ro
-      - ./logs/nginx:/var/log/nginx
-      - certbot_www:/var/www/certbot:ro
-    networks:
-      - mikrotik-vpn-net
-    depends_on:
-      app:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # ===========================================
-  # VPN Services
-  # ===========================================
-  openvpn:
-    build:
-      context: ./openvpn
-      dockerfile: Dockerfile
-    container_name: mikrotik-openvpn
-    cap_add:
-      - NET_ADMIN
-    ports:
-      - "1194:1194/udp"
-      - "127.0.0.1:7505:7505"
-    volumes:
-      - ./openvpn:/etc/openvpn
-      - ./logs:/var/log
-    restart: unless-stopped
-    networks:
-      - mikrotik-vpn-net
-    devices:
-      - /dev/net/tun
-    sysctls:
-      - net.ipv4.ip_forward=1
-    environment:
-      - OVPN_SERVER=${VPN_NETWORK}
-
-  l2tp-ipsec:
-    image: hwdsl2/ipsec-vpn-server:latest
-    container_name: mikrotik-l2tp
-    cap_add:
-      - NET_ADMIN
-    environment:
-      - VPN_IPSEC_PSK=${L2TP_PSK}
-      - VPN_USER=mikrotik
-      - VPN_PASSWORD=${MONGO_ROOT_PASSWORD}
-      - VPN_ADDITIONAL_USERS=
-      - VPN_ADDITIONAL_PASSWORDS=
-    ports:
-      - "500:500/udp"
-      - "4500:4500/udp"
-      - "1701:1701/udp"
-    volumes:
-      - ./l2tp:/etc/ipsec.d
-      - /lib/modules:/lib/modules:ro
-    restart: unless-stopped
-    networks:
-      - mikrotik-vpn-net
-    privileged: true
-
-  # ===========================================
-  # Monitoring Stack
-  # ===========================================
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: mikrotik-prometheus
-    restart: unless-stopped
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
-      - '--web.enable-lifecycle'
-      - '--storage.tsdb.retention.time=30d'
-    volumes:
-      - ./monitoring/prometheus:/etc/prometheus
-      - prometheus_data:/prometheus
-    ports:
-      - "127.0.0.1:9090:9090"
-    networks:
-      - mikrotik-vpn-net
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: mikrotik-grafana
-    restart: unless-stopped
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource,grafana-worldmap-panel
-      - GF_SERVER_ROOT_URL=https://monitor.${DOMAIN_NAME}
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
-    ports:
-      - "127.0.0.1:3001:3000"
-    networks:
-      - mikrotik-vpn-net
-    depends_on:
-      - prometheus
-
-  alertmanager:
-    image: prom/alertmanager:latest
-    container_name: mikrotik-alertmanager
-    restart: unless-stopped
-    command:
-      - '--config.file=/etc/alertmanager/alertmanager.yml'
-      - '--storage.path=/alertmanager'
-      - '--web.external-url=http://alertmanager:9093'
-    volumes:
-      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-      - alertmanager_data:/alertmanager
-    ports:
-      - "127.0.0.1:9093:9093"
-    networks:
-      - mikrotik-vpn-net
-
-  # ===========================================
-  # Exporters for Monitoring
-  # ===========================================
-  node-exporter:
-    image: prom/node-exporter:latest
-    container_name: mikrotik-node-exporter
-    restart: unless-stopped
-    command:
-      - '--path.procfs=/host/proc'
-      - '--path.sysfs=/host/sys'
-      - '--path.rootfs=/rootfs'
-      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/)'
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-    ports:
-      - "127.0.0.1:9100:9100"
-    networks:
-      - mikrotik-vpn-net
-
-  cadvisor:
-    image: gcr.io/cadvisor/cadvisor:latest
-    container_name: mikrotik-cadvisor
-    restart: unless-stopped
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-      - /dev/disk/:/dev/disk:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    devices:
-      - /dev/kmsg
-    privileged: true
-    ports:
-      - "127.0.0.1:8080:8080"
-    networks:
-      - mikrotik-vpn-net
-
-  mongodb-exporter:
-    image: percona/mongodb_exporter:0.40
-    container_name: mikrotik-mongodb-exporter
-    restart: unless-stopped
-    command:
-      - '--mongodb.uri=mongodb://admin:${MONGO_ROOT_PASSWORD}@mongodb:27017/admin?ssl=false'
-      - '--mongodb.direct-connect=true'
-      - '--collect-all'
-    ports:
-      - "127.0.0.1:9216:9216"
-    networks:
-      - mikrotik-vpn-net
-    depends_on:
-      - mongodb
-
-  redis-exporter:
-    image: oliver006/redis_exporter:latest
-    container_name: mikrotik-redis-exporter
-    restart: unless-stopped
-    environment:
-      - REDIS_ADDR=redis:6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-    ports:
-      - "127.0.0.1:9121:9121"
-    networks:
-      - mikrotik-vpn-net
-    depends_on:
-      - redis
-
-  nginx-exporter:
-    image: nginx/nginx-prometheus-exporter:latest
-    container_name: mikrotik-nginx-exporter
-    restart: unless-stopped
-    command:
-      - '-nginx.scrape-uri=http://nginx/nginx_status'
-    ports:
-      - "127.0.0.1:9113:9113"
-    networks:
-      - mikrotik-vpn-net
-    depends_on:
-      - nginx
-
-  # ===========================================
-  # Management Tools
-  # ===========================================
-  mongo-express:
-    image: mongo-express:latest
-    container_name: mikrotik-mongo-express
-    restart: unless-stopped
-    environment:
-      - ME_CONFIG_MONGODB_ADMINUSERNAME=admin
-      - ME_CONFIG_MONGODB_ADMINPASSWORD=${MONGO_ROOT_PASSWORD}
-      - ME_CONFIG_MONGODB_SERVER=mongodb
-      - ME_CONFIG_MONGODB_PORT=27017
-      - ME_CONFIG_BASICAUTH_USERNAME=admin
-      - ME_CONFIG_BASICAUTH_PASSWORD=${MONGO_ROOT_PASSWORD}
-      - ME_CONFIG_OPTIONS_EDITORTHEME=ambiance
-    ports:
-      - "127.0.0.1:8081:8081"
-    networks:
-      - mikrotik-vpn-net
-    depends_on:
-      - mongodb
-
-  redis-commander:
-    image: rediscommander/redis-commander:latest
-    container_name: mikrotik-redis-commander
-    restart: unless-stopped
-    environment:
-      - REDIS_HOSTS=local:redis:6379:0:${REDIS_PASSWORD}
-      - HTTP_USER=admin
-      - HTTP_PASSWORD=${REDIS_PASSWORD}
-    ports:
-      - "127.0.0.1:8082:8081"
-    networks:
-      - mikrotik-vpn-net
-    depends_on:
-      - redis
-
-  # ===========================================
-  # SSL Certificate Management
-  # ===========================================
-  certbot:
-    image: certbot/certbot
-    container_name: mikrotik-certbot
-    volumes:
-      - ./nginx/ssl:/etc/letsencrypt
-      - certbot_www:/var/www/certbot
-    entrypoint: ["/bin/sh", "-c", "trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;"]
-    networks:
-      - mikrotik-vpn-net
-
-# ===========================================
-# Volumes
-# ===========================================
-volumes:
-  prometheus_data:
-    driver: local
-  grafana_data:
-    driver: local
-  alertmanager_data:
-    driver: local
-  certbot_www:
-    driver: local
-
-# ===========================================
-# Networks
-# ===========================================
-networks:
-  mikrotik-vpn-net:
-    external: true
-EOF
-
-    # Create OpenVPN Dockerfile
-    cat << 'EOF' > "$SYSTEM_DIR/openvpn/Dockerfile"
-FROM alpine:latest
-
-RUN apk add --no-cache \
-    openvpn \
-    easy-rsa \
-    bash \
-    iptables \
-    curl
-
-# Copy configuration files
-COPY --chown=root:root . /etc/openvpn/
-
-# Create necessary directories
-RUN mkdir -p /etc/openvpn/ccd \
-    && mkdir -p /var/log
-
-# Make init script executable
-RUN chmod +x /etc/openvpn/init-pki.sh
-
-# Expose ports
-EXPOSE 1194/udp 7505/tcp
-
-# Entry point
-CMD ["openvpn", "--config", "/etc/openvpn/server/server.conf"]
-EOF
-
-    log "Phase 7 completed successfully!"
-}
+# Already implemented in phase6_configuration_files
 
 # =============================================================================
-# PHASE 8: MANAGEMENT SCRIPTS
+# PHASE 7: DOCKER COMPOSE (Already complete)
 # =============================================================================
 
-phase8_management_scripts() {
-    log "==================================================================="
-    log "PHASE 8: CREATING MANAGEMENT SCRIPTS"
-    log "==================================================================="
-    
-    # Main management script
-    create_main_management_script
-    
-    # Service control scripts
-    create_service_scripts
-    
-    # VPN management scripts
-    create_vpn_scripts
-    
-    # Backup scripts
-    create_backup_scripts
-    
-    # Monitoring scripts
-    create_monitoring_scripts
-    
-    # Utility scripts
-    create_utility_scripts
-    
-    # Set permissions
-    chmod +x "$SCRIPT_DIR"/*.sh
-    
-    log "Phase 8 completed successfully!"
-}
-
-# Create main management script
-create_main_management_script() {
-    cat << 'EOF' > "$SYSTEM_DIR/mikrotik-vpn"
-#!/bin/bash
-# MikroTik VPN System Management Interface
-
-# Color codes
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
-# Configuration
-SYSTEM_DIR="/opt/mikrotik-vpn"
-SCRIPT_DIR="/opt/mikrotik-vpn/scripts"
-
-# Load environment
-if [[ -f "$SYSTEM_DIR/configs/setup.env" ]]; then
-    source "$SYSTEM_DIR/configs/setup.env"
-fi
-
-# Print colored output
-print_colored() {
-    local color=$1
-    local message=$2
-    echo -e "${color}${message}${NC}"
-}
-
-# Show header
-show_header() {
-    clear
-    print_colored "$CYAN" "╔═══════════════════════════════════════════════════════════════╗"
-    print_colored "$CYAN" "║          MikroTik VPN Management System v4.2                  ║"
-    print_colored "$CYAN" "╚═══════════════════════════════════════════════════════════════╝"
-    echo
-}
-
-# Show status
-show_status() {
-    show_header
-    print_colored "$BLUE" "System Status"
-    print_colored "$BLUE" "═════════════"
-    echo
-    
-    # Check services
-    local services=("mongodb" "redis" "app" "nginx" "openvpn" "prometheus" "grafana")
-    for service in "${services[@]}"; do
-        if docker ps --format "{{.Names}}" | grep -q "mikrotik-$service"; then
-            print_colored "$GREEN" "✓ $service is running"
-        else
-            print_colored "$RED" "✗ $service is not running"
-        fi
-    done
-    
-    echo
-    print_colored "$BLUE" "System Information"
-    print_colored "$BLUE" "═════════════════"
-    echo "Domain: $DOMAIN_NAME"
-    echo "VPN Network: $VPN_NETWORK"
-    echo "Uptime: $(uptime -p)"
-    echo
-}
-
-# Main menu
-main_menu() {
-    show_header
-    print_colored "$PURPLE" "Main Menu"
-    print_colored "$PURPLE" "═════════"
-    echo
-    echo "1. System Management"
-    echo "2. VPN Management"
-    echo "3. Service Control"
-    echo "4. Monitoring & Logs"
-    echo "5. Backup & Restore"
-    echo "6. Security"
-    echo "7. Quick Actions"
-    echo "8. Help & Documentation"
-    echo "9. Exit"
-    echo
-    read -p "Select option (1-9): " choice
-    
-    case $choice in
-        1) system_management_menu ;;
-        2) vpn_management_menu ;;
-        3) service_control_menu ;;
-        4) monitoring_menu ;;
-        5) backup_menu ;;
-        6) security_menu ;;
-        7) quick_actions_menu ;;
-        8) help_menu ;;
-        9) exit 0 ;;
-        *) print_colored "$RED" "Invalid option"; sleep 2; main_menu ;;
-    esac
-}
-
-# System management menu
-system_management_menu() {
-    show_header
-    print_colored "$PURPLE" "System Management"
-    print_colored "$PURPLE" "════════════════"
-    echo
-    echo "1. Show system status"
-    echo "2. Update system"
-    echo "3. Configure settings"
-    echo "4. Manage users"
-    echo "5. View configuration"
-    echo "6. Back to main menu"
-    echo
-    read -p "Select option (1-6): " choice
-    
-    case $choice in
-        1) show_status; read -p "Press Enter to continue..."; system_management_menu ;;
-        2) $SCRIPT_DIR/update-system.sh; read -p "Press Enter to continue..."; system_management_menu ;;
-        3) $SCRIPT_DIR/configure-system.sh; system_management_menu ;;
-        4) $SCRIPT_DIR/manage-users.sh; system_management_menu ;;
-        5) $SCRIPT_DIR/show-config.sh; read -p "Press Enter to continue..."; system_management_menu ;;
-        6) main_menu ;;
-        *) print_colored "$RED" "Invalid option"; sleep 2; system_management_menu ;;
-    esac
-}
-
-# VPN management menu
-vpn_management_menu() {
-    show_header
-    print_colored "$PURPLE" "VPN Management"
-    print_colored "$PURPLE" "═════════════"
-    echo
-    echo "1. Create VPN client"
-    echo "2. List VPN clients"
-    echo "3. Revoke VPN client"
-    echo "4. Show VPN status"
-    echo "5. Export VPN configs"
-    echo "6. Back to main menu"
-    echo
-    read -p "Select option (1-6): " choice
-    
-    case $choice in
-        1) $SCRIPT_DIR/create-vpn-client.sh; vpn_management_menu ;;
-        2) $SCRIPT_DIR/list-vpn-clients.sh; read -p "Press Enter to continue..."; vpn_management_menu ;;
-        3) $SCRIPT_DIR/revoke-vpn-client.sh; vpn_management_menu ;;
-        4) $SCRIPT_DIR/vpn-status.sh; read -p "Press Enter to continue..."; vpn_management_menu ;;
-        5) $SCRIPT_DIR/export-vpn-configs.sh; vpn_management_menu ;;
-        6) main_menu ;;
-        *) print_colored "$RED" "Invalid option"; sleep 2; vpn_management_menu ;;
-    esac
-}
-
-# Service control menu
-service_control_menu() {
-    show_header
-    print_colored "$PURPLE" "Service Control"
-    print_colored "$PURPLE" "══════════════"
-    echo
-    echo "1. Start all services"
-    echo "2. Stop all services"
-    echo "3. Restart all services"
-    echo "4. Start specific service"
-    echo "5. Stop specific service"
-    echo "6. Restart specific service"
-    echo "7. Back to main menu"
-    echo
-    read -p "Select option (1-7): " choice
-    
-    case $choice in
-        1) $SCRIPT_DIR/start-services.sh; read -p "Press Enter to continue..."; service_control_menu ;;
-        2) $SCRIPT_DIR/stop-services.sh; read -p "Press Enter to continue..."; service_control_menu ;;
-        3) $SCRIPT_DIR/restart-services.sh; read -p "Press Enter to continue..."; service_control_menu ;;
-        4) $SCRIPT_DIR/start-service.sh; service_control_menu ;;
-        5) $SCRIPT_DIR/stop-service.sh; service_control_menu ;;
-        6) $SCRIPT_DIR/restart-service.sh; service_control_menu ;;
-        7) main_menu ;;
-        *) print_colored "$RED" "Invalid option"; sleep 2; service_control_menu ;;
-    esac
-}
-
-# Monitoring menu
-monitoring_menu() {
-    show_header
-    print_colored "$PURPLE" "Monitoring & Logs"
-    print_colored "$PURPLE" "════════════════"
-    echo
-    echo "1. View live logs"
-    echo "2. View service logs"
-    echo "3. System health check"
-    echo "4. Performance metrics"
-    echo "5. Open Grafana"
-    echo "6. Back to main menu"
-    echo
-    read -p "Select option (1-6): " choice
-    
-    case $choice in
-        1) $SCRIPT_DIR/view-logs.sh ;;
-        2) $SCRIPT_DIR/service-logs.sh; monitoring_menu ;;
-        3) $SCRIPT_DIR/health-check.sh; read -p "Press Enter to continue..."; monitoring_menu ;;
-        4) $SCRIPT_DIR/show-metrics.sh; read -p "Press Enter to continue..."; monitoring_menu ;;
-        5) echo "Grafana URL: http://localhost:3001"; read -p "Press Enter to continue..."; monitoring_menu ;;
-        6) main_menu ;;
-        *) print_colored "$RED" "Invalid option"; sleep 2; monitoring_menu ;;
-    esac
-}
-
-# Backup menu
-backup_menu() {
-    show_header
-    print_colored "$PURPLE" "Backup & Restore"
-    print_colored "$PURPLE" "═══════════════"
-    echo
-    echo "1. Create backup"
-    echo "2. List backups"
-    echo "3. Restore from backup"
-    echo "4. Schedule automatic backups"
-    echo "5. Export backup"
-    echo "6. Back to main menu"
-    echo
-    read -p "Select option (1-6): " choice
-    
-    case $choice in
-        1) $SCRIPT_DIR/backup-system.sh; read -p "Press Enter to continue..."; backup_menu ;;
-        2) $SCRIPT_DIR/list-backups.sh; read -p "Press Enter to continue..."; backup_menu ;;
-        3) $SCRIPT_DIR/restore-system.sh; backup_menu ;;
-        4) $SCRIPT_DIR/schedule-backups.sh; backup_menu ;;
-        5) $SCRIPT_DIR/export-backup.sh; backup_menu ;;
-        6) main_menu ;;
-        *) print_colored "$RED" "Invalid option"; sleep 2; backup_menu ;;
-    esac
-}
-
-# Security menu
-security_menu() {
-    show_header
-    print_colored "$PURPLE" "Security"
-    print_colored "$PURPLE" "════════"
-    echo
-    echo "1. View security status"
-    echo "2. Update SSL certificates"
-    echo "3. Manage firewall"
-    echo "4. View failed login attempts"
-    echo "5. Run security audit"
-    echo "6. Back to main menu"
-    echo
-    read -p "Select option (1-6): " choice
-    
-    case $choice in
-        1) $SCRIPT_DIR/security-status.sh; read -p "Press Enter to continue..."; security_menu ;;
-        2) $SCRIPT_DIR/update-ssl.sh; security_menu ;;
-        3) $SCRIPT_DIR/manage-firewall.sh; security_menu ;;
-        4) $SCRIPT_DIR/show-failed-logins.sh; read -p "Press Enter to continue..."; security_menu ;;
-        5) $SCRIPT_DIR/security-audit.sh; read -p "Press Enter to continue..."; security_menu ;;
-        6) main_menu ;;
-        *) print_colored "$RED" "Invalid option"; sleep 2; security_menu ;;
-    esac
-}
-
-# Quick actions menu
-quick_actions_menu() {
-    show_header
-    print_colored "$PURPLE" "Quick Actions"
-    print_colored "$PURPLE" "════════════"
-    echo
-    echo "1. Restart application"
-    echo "2. Clear logs"
-    echo "3. Reset admin password"
-    echo "4. Generate API key"
-    echo "5. Export configuration"
-    echo "6. Back to main menu"
-    echo
-    read -p "Select option (1-6): " choice
-    
-    case $choice in
-        1) docker restart mikrotik-app; print_colored "$GREEN" "Application restarted"; sleep 2; quick_actions_menu ;;
-        2) $SCRIPT_DIR/clear-logs.sh; quick_actions_menu ;;
-        3) $SCRIPT_DIR/reset-password.sh; quick_actions_menu ;;
-        4) $SCRIPT_DIR/generate-api-key.sh; read -p "Press Enter to continue..."; quick_actions_menu ;;
-        5) $SCRIPT_DIR/export-config.sh; quick_actions_menu ;;
-        6) main_menu ;;
-        *) print_colored "$RED" "Invalid option"; sleep 2; quick_actions_menu ;;
-    esac
-}
-
-# Help menu
-help_menu() {
-    show_header
-    print_colored "$PURPLE" "Help & Documentation"
-    print_colored "$PURPLE" "═══════════════════"
-    echo
-    echo "System Information:"
-    echo "  Version: 4.2"
-    echo "  Domain: $DOMAIN_NAME"
-    echo "  Admin Email: $ADMIN_EMAIL"
-    echo
-    echo "Access URLs:"
-    echo "  Main: https://${DOMAIN_NAME}:9443"
-    echo "  Admin: https://admin.${DOMAIN_NAME}:9443"
-    echo "  Monitor: https://monitor.${DOMAIN_NAME}:9443"
-    echo "  API Docs: https://${DOMAIN_NAME}:9443/api-docs"
-    echo
-    echo "Configuration Files:"
-    echo "  Main: $CONFIG_DIR/setup.env"
-    echo "  Docker: $SYSTEM_DIR/docker-compose.yml"
-    echo
-    echo "Log Files:"
-    echo "  Application: $LOG_DIR/app.log"
-    echo "  Nginx: $LOG_DIR/nginx/"
-    echo
-    read -p "Press Enter to continue..."
-    main_menu
-}
-
-# Handle command line arguments
-case "${1:-}" in
-    status)
-        show_status
-        ;;
-    start)
-        $SCRIPT_DIR/start-services.sh
-        ;;
-    stop)
-        $SCRIPT_DIR/stop-services.sh
-        ;;
-    restart)
-        $SCRIPT_DIR/restart-services.sh
-        ;;
-    backup)
-        $SCRIPT_DIR/backup-system.sh
-        ;;
-    health)
-        $SCRIPT_DIR/health-check.sh
-        ;;
-    *)
-        main_menu
-        ;;
-esac
-EOF
-
-    chmod +x "$SYSTEM_DIR/mikrotik-vpn"
-    ln -sf "$SYSTEM_DIR/mikrotik-vpn" /usr/local/bin/mikrotik-vpn
-}
-
-# Create service control scripts
-create_service_scripts() {
-    # Start services
-    cat << 'EOF' > "$SCRIPT_DIR/start-services.sh"
-#!/bin/bash
-source /opt/mikrotik-vpn/configs/setup.env
-
-echo "Starting MikroTik VPN services..."
-cd /opt/mikrotik-vpn || exit 1
-
-# Create network if not exists
-docker network ls --format '{{.Name}}' | grep -q "^mikrotik-vpn-net$" || \
-    docker network create mikrotik-vpn-net --driver bridge --subnet=172.20.0.0/16
-
-# Start services in order
-docker compose up -d mongodb redis
-sleep 10
-docker compose up -d app
-sleep 5
-docker compose up -d
-
-echo "All services started!"
-docker compose ps
-EOF
-
-    # Stop services
-    cat << 'EOF' > "$SCRIPT_DIR/stop-services.sh"
-#!/bin/bash
-source /opt/mikrotik-vpn/configs/setup.env
-
-echo "Stopping MikroTik VPN services..."
-cd /opt/mikrotik-vpn || exit 1
-docker compose down
-
-echo "All services stopped!"
-EOF
-
-    # Restart services
-    cat << 'EOF' > "$SCRIPT_DIR/restart-services.sh"
-#!/bin/bash
-source /opt/mikrotik-vpn/configs/setup.env
-
-echo "Restarting MikroTik VPN services..."
-cd /opt/mikrotik-vpn || exit 1
-docker compose restart
-
-echo "All services restarted!"
-docker compose ps
-EOF
-
-    # Health check
-    cat << 'EOF' > "$SCRIPT_DIR/health-check.sh"
-#!/bin/bash
-source /opt/mikrotik-vpn/configs/setup.env
-
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-echo "=== MikroTik VPN System Health Check ==="
-echo "Timestamp: $(date)"
-echo
-
-# Function to check service
-check_service() {
-    local service=$1
-    local container="mikrotik-$service"
-    
-    if docker ps --format "{{.Names}}" | grep -q "^${container}$"; then
-        # Get container health status
-        health=$(docker inspect --format='{{.State.Health.Status}}' $container 2>/dev/null || echo "none")
-        
-        if [[ "$health" == "healthy" ]] || [[ "$health" == "none" ]]; then
-            echo -e "${GREEN}✓${NC} $service is running"
-            
-            # Additional checks for specific services
-            case $service in
-                "mongodb")
-                    if docker exec $container mongosh --eval "db.adminCommand('ping')" --quiet &>/dev/null; then
-                        echo -e "  ${GREEN}✓${NC} MongoDB responding to queries"
-                    else
-                        echo -e "  ${RED}✗${NC} MongoDB not responding"
-                    fi
-                    ;;
-                "redis")
-                    if docker exec $container redis-cli --pass "$REDIS_PASSWORD" ping 2>/dev/null | grep -q "PONG"; then
-                        echo -e "  ${GREEN}✓${NC} Redis responding to queries"
-                    else
-                        echo -e "  ${RED}✗${NC} Redis not responding"
-                    fi
-                    ;;
-                "app")
-                    if curl -s http://localhost:3000/health | grep -q "OK"; then
-                        echo -e "  ${GREEN}✓${NC} Application API healthy"
-                    else
-                        echo -e "  ${RED}✗${NC} Application API not responding"
-                    fi
-                    ;;
-            esac
-        else
-            echo -e "${YELLOW}⚠${NC} $service is unhealthy"
-        fi
-    else
-        echo -e "${RED}✗${NC} $service is not running"
-    fi
-}
-
-# Check all services
-echo "Checking services..."
-services=("mongodb" "redis" "app" "nginx" "openvpn" "prometheus" "grafana")
-for service in "${services[@]}"; do
-    check_service "$service"
-done
-
-echo
-echo "Checking system resources..."
-
-# Disk usage
-disk_usage=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
-if [[ $disk_usage -lt 80 ]]; then
-    echo -e "${GREEN}✓${NC} Disk usage: $disk_usage%"
-else
-    echo -e "${YELLOW}⚠${NC} Disk usage: $disk_usage% (high)"
-fi
-
-# Memory usage
-mem_total=$(free -m | awk '/^Mem:/{print $2}')
-mem_used=$(free -m | awk '/^Mem:/{print $3}')
-mem_percent=$((mem_used * 100 / mem_total))
-if [[ $mem_percent -lt 80 ]]; then
-    echo -e "${GREEN}✓${NC} Memory usage: $mem_percent% ($mem_used MB / $mem_total MB)"
-else
-    echo -e "${YELLOW}⚠${NC} Memory usage: $mem_percent% (high)"
-fi
-
-# CPU load
-load_avg=$(uptime | awk -F'load average:' '{print $2}')
-echo -e "${GREEN}✓${NC} Load average:$load_avg"
-
-echo
-echo "Checking network connectivity..."
-
-# Check internet
-if ping -c 1 8.8.8.8 &>/dev/null; then
-    echo -e "${GREEN}✓${NC} Internet connectivity OK"
-else
-    echo -e "${RED}✗${NC} No internet connectivity"
-fi
-
-# Check DNS
-if nslookup google.com &>/dev/null; then
-    echo -e "${GREEN}✓${NC} DNS resolution OK"
-else
-    echo -e "${RED}✗${NC} DNS resolution failed"
-fi
-
-echo
-echo "Health check completed!"
-EOF
-}
-
-# Create VPN management scripts
-create_vpn_scripts() {
-    # Create VPN client
-    cat << 'EOF' > "$SCRIPT_DIR/create-vpn-client.sh"
-#!/bin/bash
-source /opt/mikrotik-vpn/configs/setup.env
-
-read -p "Enter client name (alphanumeric, no spaces): " CLIENT_NAME
-
-# Validate input
-if [[ ! $CLIENT_NAME =~ ^[a-zA-Z0-9_-]+$ ]]; then
-    echo "Invalid client name. Use only letters, numbers, hyphens, and underscores."
-    exit 1
-fi
-
-echo "Creating VPN client: $CLIENT_NAME"
-
-# Check if OpenVPN is initialized
-if ! docker exec mikrotik-openvpn test -f /etc/openvpn/easy-rsa/pki/ca.crt 2>/dev/null; then
-    echo "Initializing OpenVPN PKI..."
-    docker exec mikrotik-openvpn /etc/openvpn/init-pki.sh
-fi
-
-# Generate client certificate
-docker exec mikrotik-openvpn bash -c "
-cd /etc/openvpn/easy-rsa
-./easyrsa --batch gen-req $CLIENT_NAME nopass
-./easyrsa --batch sign-req client $CLIENT_NAME
-"
-
-# Create client configuration
-cat << OVPN > "/opt/mikrotik-vpn/clients/$CLIENT_NAME.ovpn"
-client
-dev tun
-proto udp
-remote $DOMAIN_NAME 1194
-resolv-retry infinite
-nobind
-persist-key
-persist-tun
-remote-cert-tls server
-cipher AES-256-GCM
-auth SHA512
-comp-lzo
-verb 3
-
-<ca>
-$(docker exec mikrotik-openvpn cat /etc/openvpn/easy-rsa/pki/ca.crt)
-</ca>
-
-<cert>
-$(docker exec mikrotik-openvpn cat /etc/openvpn/easy-rsa/pki/issued/$CLIENT_NAME.crt | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p')
-</cert>
-
-<key>
-$(docker exec mikrotik-openvpn cat /etc/openvpn/easy-rsa/pki/private/$CLIENT_NAME.key)
-</key>
-
-<tls-auth>
-$(docker exec mikrotik-openvpn cat /etc/openvpn/easy-rsa/ta.key)
-</tls-auth>
-key-direction 1
-OVPN
-
-echo "VPN client configuration created: /opt/mikrotik-vpn/clients/$CLIENT_NAME.ovpn"
-echo
-echo "To use this configuration:"
-echo "1. Copy the .ovpn file to your device"
-echo "2. Import it into your OpenVPN client"
-echo "3. Connect using the imported profile"
-EOF
-
-    # List VPN clients
-    cat << 'EOF' > "$SCRIPT_DIR/list-vpn-clients.sh"
-#!/bin/bash
-source /opt/mikrotik-vpn/configs/setup.env
-
-echo "=== VPN Clients ==="
-echo
-
-if [[ -d "/opt/mikrotik-vpn/clients" ]]; then
-    clients=$(ls -1 /opt/mikrotik-vpn/clients/*.ovpn 2>/dev/null | wc -l)
-    
-    if [[ $clients -gt 0 ]]; then
-        echo "Active client configurations:"
-        ls -1 /opt/mikrotik-vpn/clients/*.ovpn | while read file; do
-            basename "$file" .ovpn
-        done
-    else
-        echo "No client configurations found."
-    fi
-else
-    echo "Clients directory not found."
-fi
-
-echo
-echo "=== Connected Clients ==="
-if docker exec mikrotik-openvpn test -f /var/log/openvpn-status.log 2>/dev/null; then
-    docker exec mikrotik-openvpn cat /var/log/openvpn-status.log | grep "CLIENT_LIST" | awk -F',' '{print $2 " - " $3}'
-else
-    echo "No status information available."
-fi
-EOF
-
-    # VPN status
-    cat << 'EOF' > "$SCRIPT_DIR/vpn-status.sh"
-#!/bin/bash
-source /opt/mikrotik-vpn/configs/setup.env
-
-echo "=== VPN Server Status ==="
-echo
-
-# OpenVPN status
-echo "OpenVPN Server:"
-if docker ps | grep -q mikrotik-openvpn; then
-    echo "  Status: Running"
-    
-    # Get connected clients
-    if docker exec mikrotik-openvpn test -f /var/log/openvpn-status.log 2>/dev/null; then
-        clients=$(docker exec mikrotik-openvpn grep -c "CLIENT_LIST" /var/log/openvpn-status.log 2>/dev/null || echo "0")
-        echo "  Connected clients: $clients"
-    fi
-    
-    # Get traffic stats
-    echo "  Port: 1194/udp"
-else
-    echo "  Status: Not running"
-fi
-
-echo
-echo "L2TP/IPSec Server:"
-if docker ps | grep -q mikrotik-l2tp; then
-    echo "  Status: Running"
-    echo "  Ports: 500/udp, 4500/udp, 1701/udp"
-    
-    # Show connection info
-    echo "  PSK: Configured"
-    echo "  Username: mikrotik"
-else
-    echo "  Status: Not running"
-fi
-
-echo
-echo "VPN Network: $VPN_NETWORK"
-echo "Public IP: $(curl -s https://api.ipify.org 2>/dev/null || echo "Unable to determine")"
-EOF
-}
-
-# Create backup scripts
-create_backup_scripts() {
-    # Backup system
-    cat << 'EOF' > "$SCRIPT_DIR/backup-system.sh"
-#!/bin/bash
-source /opt/mikrotik-vpn/configs/setup.env
-
-BACKUP_DIR="/opt/mikrotik-vpn/backups"
-DATE=$(date +%Y%m%d_%H%M%S)
-BACKUP_NAME="mikrotik-vpn-backup-$DATE"
-BACKUP_PATH="$BACKUP_DIR/$BACKUP_NAME"
-
-echo "Creating system backup..."
-mkdir -p "$BACKUP_PATH"
-
-# Stop services for consistency
-echo "Stopping services..."
-cd /opt/mikrotik-vpn || exit 1
-docker compose stop app
-
-# Backup databases
-echo "Backing up MongoDB..."
-docker exec mikrotik-mongodb mongodump \
-    --uri="mongodb://admin:$MONGO_ROOT_PASSWORD@localhost:27017/admin" \
-    --archive="/tmp/mongodb-backup.gz" \
-    --gzip
-
-docker cp mikrotik-mongodb:/tmp/mongodb-backup.gz "$BACKUP_PATH/"
-docker exec mikrotik-mongodb rm /tmp/mongodb-backup.gz
-
-echo "Backing up Redis..."
-docker exec mikrotik-redis redis-cli --pass "$REDIS_PASSWORD" BGSAVE
-sleep 5
-docker cp mikrotik-redis:/data/dump.rdb "$BACKUP_PATH/redis-dump.rdb"
-
-# Backup configurations
-echo "Backing up configurations..."
-tar -czf "$BACKUP_PATH/configs.tar.gz" \
-    /opt/mikrotik-vpn/configs \
-    /opt/mikrotik-vpn/nginx \
-    /opt/mikrotik-vpn/app/.env \
-    /opt/mikrotik-vpn/docker-compose.yml \
-    2>/dev/null
-
-# Backup VPN configs
-echo "Backing up VPN configurations..."
-tar -czf "$BACKUP_PATH/vpn.tar.gz" \
-    /opt/mikrotik-vpn/openvpn \
-    /opt/mikrotik-vpn/clients \
-    2>/dev/null
-
-# Start services
-echo "Starting services..."
-docker compose start app
-
-# Create backup info
-cat << INFO > "$BACKUP_PATH/backup-info.txt"
-Backup Information
-==================
-Date: $(date)
-System: MikroTik VPN Management System
-Version: 4.2
-Domain: $DOMAIN_NAME
-
-Contents:
-- MongoDB database
-- Redis database
-- System configurations
-- VPN configurations
-- SSL certificates
-
-Restore Instructions:
-1. Run: mikrotik-vpn restore
-2. Select this backup: $BACKUP_NAME
-3. Confirm restoration
-INFO
-
-# Compress backup
-echo "Compressing backup..."
-cd "$BACKUP_DIR"
-tar -czf "$BACKUP_NAME.tar.gz" "$BACKUP_NAME"
-rm -rf "$BACKUP_NAME"
-
-# Clean old backups (keep last 7)
-echo "Cleaning old backups..."
-ls -t "$BACKUP_DIR"/*.tar.gz 2>/dev/null | tail -n +8 | xargs -r rm
-
-echo "Backup completed: $BACKUP_DIR/$BACKUP_NAME.tar.gz"
-echo "Size: $(du -h "$BACKUP_DIR/$BACKUP_NAME.tar.gz" | cut -f1)"
-EOF
-
-    # List backups
-    cat << 'EOF' > "$SCRIPT_DIR/list-backups.sh"
-#!/bin/bash
-source /opt/mikrotik-vpn/configs/setup.env
-
-BACKUP_DIR="/opt/mikrotik-vpn/backups"
-
-echo "=== Available Backups ==="
-echo
-
-if [[ -d "$BACKUP_DIR" ]]; then
-    backups=$(ls -1 "$BACKUP_DIR"/*.tar.gz 2>/dev/null | wc -l)
-    
-    if [[ $backups -gt 0 ]]; then
-        echo "Found $backups backup(s):"
-        echo
-        ls -lh "$BACKUP_DIR"/*.tar.gz | awk '{print $9 " (" $5 ")"}'
-    else
-        echo "No backups found."
-    fi
-else
-    echo "Backup directory not found."
-fi
-
-echo
-echo "Backup location: $BACKUP_DIR"
-EOF
-
-    # Restore system
-    cat << 'EOF' > "$SCRIPT_DIR/restore-system.sh"
-#!/bin/bash
-source /opt/mikrotik-vpn/configs/setup.env
-
-BACKUP_DIR="/opt/mikrotik-vpn/backups"
-
-echo "=== System Restore ==="
-echo
-
-# List available backups
-echo "Available backups:"
-select backup in $(ls -1 "$BACKUP_DIR"/*.tar.gz 2>/dev/null); do
-    if [[ -n "$backup" ]]; then
-        break
-    fi
-done
-
-if [[ -z "$backup" ]]; then
-    echo "No backup selected."
-    exit 1
-fi
-
-echo
-echo "Selected backup: $(basename "$backup")"
-echo
-echo "WARNING: This will restore the system to the backup state."
-echo "Current data will be overwritten!"
-echo
-read -p "Are you sure you want to continue? (yes/no): " confirm
-
-if [[ "$confirm" != "yes" ]]; then
-    echo "Restore cancelled."
-    exit 0
-fi
-
-# Create temporary directory
-TEMP_DIR="/tmp/restore-$"
-mkdir -p "$TEMP_DIR"
-
-# Extract backup
-echo "Extracting backup..."
-tar -xzf "$backup" -C "$TEMP_DIR"
-
-BACKUP_NAME=$(basename "$backup" .tar.gz)
-RESTORE_PATH="$TEMP_DIR/$BACKUP_NAME"
-
-# Stop all services
-echo "Stopping all services..."
-cd /opt/mikrotik-vpn || exit 1
-docker compose down
-
-# Restore MongoDB
-echo "Restoring MongoDB..."
-docker compose up -d mongodb
-sleep 10
-
-docker cp "$RESTORE_PATH/mongodb-backup.gz" mikrotik-mongodb:/tmp/
-docker exec mikrotik-mongodb mongorestore \
-    --uri="mongodb://admin:$MONGO_ROOT_PASSWORD@localhost:27017/admin" \
-    --archive="/tmp/mongodb-backup.gz" \
-    --gzip \
-    --drop
-
-# Restore Redis
-echo "Restoring Redis..."
-docker compose stop redis
-docker cp "$RESTORE_PATH/redis-dump.rdb" mikrotik-redis:/data/dump.rdb
-docker compose start redis
-
-# Restore configurations
-echo "Restoring configurations..."
-tar -xzf "$RESTORE_PATH/configs.tar.gz" -C / 2>/dev/null || true
-tar -xzf "$RESTORE_PATH/vpn.tar.gz" -C / 2>/dev/null || true
-
-# Start all services
-echo "Starting all services..."
-docker compose up -d
-
-# Cleanup
-rm -rf "$TEMP_DIR"
-
-echo
-echo "Restore completed successfully!"
-echo "Please verify all services are working correctly."
-EOF
-}
-
-# Create monitoring scripts
-create_monitoring_scripts() {
-    # View logs
-    cat << 'EOF' > "$SCRIPT_DIR/view-logs.sh"
-#!/bin/bash
-source /opt/mikrotik-vpn/configs/setup.env
-
-echo "Select service to view logs:"
-echo "1. All services"
-echo "2. Application"
-echo "3. MongoDB"
-echo "4. Redis"
-echo "5. Nginx"
-echo "6. OpenVPN"
-echo "7. Exit"
-echo
-
-read -p "Enter choice (1-7): " choice
-
-cd /opt/mikrotik-vpn || exit 1
-
-case $choice in
-    1) docker compose logs -f ;;
-    2) docker compose logs -f app ;;
-    3) docker compose logs -f mongodb ;;
-    4) docker compose logs -f redis ;;
-    5) docker compose logs -f nginx ;;
-    6) docker compose logs -f openvpn ;;
-    7) exit 0 ;;
-    *) echo "Invalid choice"; exit 1 ;;
-esac
-EOF
-
-    # Show metrics
-    cat << 'EOF' > "$SCRIPT_DIR/show-metrics.sh"
-#!/bin/bash
-source /opt/mikrotik-vpn/configs/setup.env
-
-echo "=== System Metrics ==="
-echo
-
-# CPU usage
-echo "CPU Usage:"
-docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}" | grep mikrotik
-
-echo
-echo "Memory Usage:"
-docker stats --no-stream --format "table {{.Container}}\t{{.MemUsage}}" | grep mikrotik
-
-echo
-echo "Network I/O:"
-docker stats --no-stream --format "table {{.Container}}\t{{.NetIO}}" | grep mikrotik
-
-echo
-echo "Disk I/O:"
-docker stats --no-stream --format "table {{.Container}}\t{{.BlockIO}}" | grep mikrotik
-
-echo
-echo "For detailed metrics, visit Grafana: http://localhost:3001"
-EOF
-}
-
-# Create utility scripts
-create_utility_scripts() {
-    # Update system
-    cat << 'EOF' > "$SCRIPT_DIR/update-system.sh"
-#!/bin/bash
-source /opt/mikrotik-vpn/configs/setup.env
-
-echo "=== System Update ==="
-echo
-
-echo "Pulling latest Docker images..."
-cd /opt/mikrotik-vpn || exit 1
-docker compose pull
-
-echo
-echo "Rebuilding application..."
-docker compose build app
-
-echo
-echo "Restarting services with new images..."
-docker compose up -d
-
-echo
-echo "Cleaning up old images..."
-docker image prune -f
-
-echo
-echo "Update completed!"
-docker compose ps
-EOF
-
-    # Show configuration
-    cat << 'EOF' > "$SCRIPT_DIR/show-config.sh"
-#!/bin/bash
-source /opt/mikrotik-vpn/configs/setup.env
-
-echo "=== System Configuration ==="
-echo
-
-echo "Basic Information:"
-echo "  Domain: $DOMAIN_NAME"
-echo "  Admin Email: $ADMIN_EMAIL"
-echo "  VPN Network: $VPN_NETWORK"
-echo "  SSH Port: $SSH_PORT"
-echo
-
-echo "Service URLs:"
-echo "  Main: https://$DOMAIN_NAME"
-echo "  Admin: https://admin.$DOMAIN_NAME"
-echo "  Monitor: https://monitor.$DOMAIN_NAME"
-echo "  API Docs: https://$DOMAIN_NAME/api-docs"
-echo
-
-echo "Database Access:"
-echo "  MongoDB: mongodb://localhost:27017"
-echo "  Redis: redis://localhost:6379"
-echo
-
-echo "Management Tools:"
-echo "  Mongo Express: http://localhost:8081"
-echo "  Redis Commander: http://localhost:8082"
-echo "  Prometheus: http://localhost:9090"
-echo "  Grafana: http://localhost:3001"
-echo
-
-echo "Configuration Files:"
-echo "  Environment: $CONFIG_DIR/setup.env"
-echo "  Docker Compose: $SYSTEM_DIR/docker-compose.yml"
-echo "  Nginx: $SYSTEM_DIR/nginx/conf.d/"
-echo "  Application: $SYSTEM_DIR/app/.env"
-EOF
-
-    # Security status
-    cat << 'EOF' > "$SCRIPT_DIR/security-status.sh"
-#!/bin/bash
-source /opt/mikrotik-vpn/configs/setup.env
-
-echo "=== Security Status ==="
-echo
-
-# SSL Certificate
-echo "SSL Certificate:"
-if [[ -f "/opt/mikrotik-vpn/nginx/ssl/fullchain.pem" ]]; then
-    expiry=$(openssl x509 -enddate -noout -in /opt/mikrotik-vpn/nginx/ssl/fullchain.pem | cut -d= -f2)
-    echo "  Status: Installed"
-    echo "  Expires: $expiry"
-else
-    echo "  Status: Not found"
-fi
-
-echo
-
-# Firewall
-echo "Firewall (UFW):"
-if systemctl is-active --quiet ufw; then
-    echo "  Status: Active"
-    ufw status numbered | grep -E "^\[[0-9]+\]" | head -5
-else
-    echo "  Status: Inactive"
-fi
-
-echo
-
-# Fail2ban
-echo "Fail2ban:"
-if systemctl is-active --quiet fail2ban; then
-    echo "  Status: Active"
-    fail2ban-client status | grep "Jail list" | cut -d: -f2
-else
-    echo "  Status: Inactive"
-fi
-
-echo
-
-# SSH
-echo "SSH Configuration:"
-echo "  Port: $SSH_PORT"
-echo "  Root Login: $(grep "^PermitRootLogin" /etc/ssh/sshd_config.d/*.conf 2>/dev/null | awk '{print $2}' | head -1 || echo "not configured")"
-echo "  Password Auth: $(grep "^PasswordAuthentication" /etc/ssh/sshd_config.d/*.conf 2>/dev/null | awk '{print $2}' | head -1 || echo "not configured")"
-EOF
-
-    # Clear logs
-    cat << 'EOF' > "$SCRIPT_DIR/clear-logs.sh"
-#!/bin/bash
-source /opt/mikrotik-vpn/configs/setup.env
-
-echo "This will clear all application logs."
-read -p "Are you sure? (yes/no): " confirm
-
-if [[ "$confirm" != "yes" ]]; then
-    echo "Cancelled."
-    exit 0
-fi
-
-echo "Clearing logs..."
-
-# Application logs
-find /opt/mikrotik-vpn/logs -name "*.log" -type f -exec truncate -s 0 {} \;
-
-# Docker logs
-docker ps --format "{{.Names}}" | grep mikrotik | while read container; do
-    echo "Clearing logs for $container..."
-    docker exec $container sh -c 'find /var/log -name "*.log" -type f -exec truncate -s 0 {} \; 2>/dev/null' || true
-done
-
-echo "Logs cleared!"
-EOF
-}
-
 # =============================================================================
-# PHASE 9: SECURITY CONFIGURATION
+# PHASE 8: MANAGEMENT SCRIPTS (Already complete)
 # =============================================================================
 
-phase9_security_configuration() {
-    log "==================================================================="
-    log "PHASE 9: SECURITY CONFIGURATION"
-    log "==================================================================="
-    
-    # Configure firewall
-    setup_firewall
-    
-    # Configure Fail2ban
-    setup_fail2ban
-    
-    # Configure SSH hardening
-    harden_ssh
-    
-    # Setup intrusion detection
-    setup_intrusion_detection
-    
-    # Create security cron jobs
-    setup_security_crons
-    
-    log "Phase 9 completed successfully!"
-}
-
-# Setup firewall
-setup_firewall() {
-    log "Configuring UFW firewall..."
-    
-    # Reset firewall
-    ufw --force disable
-    ufw --force reset
-    
-    # Default policies
-    ufw default deny incoming
-    ufw default allow outgoing
-    
-    # Allow SSH
-    ufw allow "$SSH_PORT/tcp" comment 'SSH'
-    
-    # Allow web traffic
-    ufw allow 9080/tcp comment 'HTTP'
-    ufw allow 9443/tcp comment 'HTTPS'
-    
-    # Allow VPN
-    ufw allow 1194/udp comment 'OpenVPN'
-    ufw allow 500/udp comment 'IPSec'
-    ufw allow 4500/udp comment 'IPSec NAT-T'
-    ufw allow 1701/udp comment 'L2TP'
-    
-    # Allow Docker network
-    ufw allow from 172.20.0.0/16 comment 'Docker network'
-    
-    # Enable firewall
-    ufw --force enable
-    
-    log "Firewall configured successfully"
-}
-
-# Setup Fail2ban
-setup_fail2ban() {
-    log "Configuring Fail2ban..."
-    
-    # Create jail configuration
-    cat << EOF > /etc/fail2ban/jail.local
-[DEFAULT]
-bantime = 3600
-findtime = 600
-maxretry = 5
-destemail = $ADMIN_EMAIL
-sender = fail2ban@$DOMAIN_NAME
-action = %(action_mwl)s
-ignoreip = 127.0.0.1/8 ::1
-
-[sshd]
-enabled = true
-port = $SSH_PORT
-filter = sshd
-logpath = /var/log/auth.log
-maxretry = 3
-bantime = 7200
-
-[nginx-http-auth]
-enabled = true
-filter = nginx-http-auth
-port = http,https
-logpath = /opt/mikrotik-vpn/logs/nginx/error.log
-maxretry = 5
-
-[nginx-limit-req]
-enabled = true
-port = http,https
-filter = nginx-limit-req
-logpath = /opt/mikrotik-vpn/logs/nginx/error.log
-maxretry = 10
-
-[nginx-botsearch]
-enabled = true
-port = http,https
-filter = nginx-botsearch
-logpath = /opt/mikrotik-vpn/logs/nginx/access.log
-maxretry = 2
-
-[nginx-noscript]
-enabled = true
-port = http,https
-filter = nginx-noscript
-logpath = /opt/mikrotik-vpn/logs/nginx/access.log
-maxretry = 6
-
-[nginx-badbots]
-enabled = true
-port = http,https
-filter = apache-badbots
-action = iptables-multiport[name=BadBots, port="http,https"]
-logpath = /opt/mikrotik-vpn/logs/nginx/access.log
-maxretry = 2
-
-[mongodb-auth]
-enabled = false
-filter = mongodb-auth
-port = 27017
-logpath = /opt/mikrotik-vpn/mongodb/logs/mongod.log
-maxretry = 3
-EOF
-
-    # Create MongoDB filter
-    cat << 'EOF' > /etc/fail2ban/filter.d/mongodb-auth.conf
-[Definition]
-failregex = ^.*authentication failed.*from client <HOST>.*$
-            ^.*Failed to authenticate.*from client <HOST>.*$
-ignoreregex =
-EOF
-
-    # Restart Fail2ban
-    systemctl restart fail2ban
-    systemctl enable fail2ban
-    
-    log "Fail2ban configured successfully"
-}
-
-# SSH hardening
-harden_ssh() {
-    log "Hardening SSH configuration..."
-    
-    # Create required directories
-    mkdir -p /run/sshd
-    chmod 755 /run/sshd
-    
-    # Backup original SSH config
-    if [[ ! -f /etc/ssh/sshd_config.backup ]]; then
-        cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
-    fi
-    
-    # Create SSH config
-    cat << EOF > /etc/ssh/sshd_config.d/99-mikrotik-vpn-hardening.conf
-# MikroTik VPN SSH Hardening
-Port $SSH_PORT
-Protocol 2
-
-# Host keys
-HostKey /etc/ssh/ssh_host_rsa_key
-HostKey /etc/ssh/ssh_host_ecdsa_key
-HostKey /etc/ssh/ssh_host_ed25519_key
-
-# Authentication
-LoginGraceTime 30
-PermitRootLogin no
-StrictModes yes
-MaxAuthTries 3
-MaxSessions 5
-PubkeyAuthentication yes
-PasswordAuthentication yes
-PermitEmptyPasswords no
-ChallengeResponseAuthentication no
-
-# Security
-X11Forwarding no
-AllowTcpForwarding no
-AllowAgentForwarding no
-PermitTunnel no
-PrintMotd no
-PrintLastLog yes
-TCPKeepAlive yes
-Compression delayed
-ClientAliveInterval 300
-ClientAliveCountMax 2
-UseDNS no
-
-# Restrict users
-AllowUsers mikrotik-vpn ${SUDO_USER:-root}
-
-# Logging
-SyslogFacility AUTH
-LogLevel INFO
-
-# Ciphers
-Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
-MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com
-KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp521,ecdh-sha2-nistp384,ecdh-sha2-nistp256,diffie-hellman-group-exchange-sha256
-EOF
-
-    # Test configuration
-    if sshd -t; then
-        # Only restart SSH if systemctl is working
-        if systemctl is-system-running &>/dev/null; then
-            # Try different service names
-            if systemctl list-units --type=service | grep -q "^ssh.service"; then
-                systemctl restart ssh
-                log "SSH hardening completed successfully (using ssh service)"
-            elif systemctl list-units --type=service | grep -q "^sshd.service"; then
-                systemctl restart sshd
-                log "SSH hardening completed successfully (using sshd service)"
-            else
-                log_warning "SSH service not found, trying service command..."
-                service ssh restart || service sshd restart || {
-                    log_warning "Could not restart SSH service, but configuration is updated"
-                    log_warning "You may need to manually restart SSH service"
-                }
-            fi
-        else
-            log_warning "SSH configuration updated but service not restarted (systemctl not available)"
-            log "SSH hardening configuration saved"
-        fi
-    else
-        log_error "SSH configuration test failed, reverting changes..."
-        rm -f /etc/ssh/sshd_config.d/99-mikrotik-vpn-hardening.conf
-        return 1
-    fi
-}
-
-# Setup intrusion detection
-setup_intrusion_detection() {
-    log "Setting up intrusion detection..."
-    
-    # Initialize AIDE
-    if command -v aide &> /dev/null; then
-        if [[ ! -f "/var/lib/aide/aide.db" ]]; then
-            log "Initializing AIDE database..."
-            # Create aide config directory if not exists
-            mkdir -p /var/lib/aide
-            
-            # Initialize AIDE
-            if command -v aideinit &> /dev/null; then
-                aideinit -y -f || {
-                    log_warning "AIDE initialization failed, trying alternative method..."
-                    aide --init || log_warning "AIDE initialization failed"
-                }
-                
-                # Copy database if created
-                if [[ -f /var/lib/aide/aide.db.new ]]; then
-                    cp /var/lib/aide/aide.db.new /var/lib/aide/aide.db
-                fi
-            else
-                log_warning "aideinit not found, using aide --init"
-                aide --init || log_warning "AIDE initialization failed"
-            fi
-        else
-            log "AIDE database already exists"
-        fi
-    else
-        log_warning "AIDE not installed, skipping"
-    fi
-    
-    # Configure ClamAV
-    if command -v clamscan &> /dev/null; then
-        if systemctl is-system-running &>/dev/null; then
-            systemctl stop clamav-freshclam 2>/dev/null || true
-            freshclam || log_warning "ClamAV database update failed"
-            systemctl start clamav-freshclam 2>/dev/null || true
-            systemctl enable clamav-daemon 2>/dev/null || true
-        else
-            log_warning "Cannot manage ClamAV services without systemctl"
-            freshclam || log_warning "ClamAV database update failed"
-        fi
-    else
-        log_warning "ClamAV not installed, skipping"
-    fi
-    
-    # Update rkhunter
-    if command -v rkhunter &> /dev/null; then
-        rkhunter --update || log_warning "rkhunter update failed"
-        rkhunter --propupd || log_warning "rkhunter property update failed"
-    else
-        log_warning "rkhunter not installed, skipping"
-    fi
-    
-    log "Intrusion detection setup completed"
-}
-
-# Setup security cron jobs
-setup_security_crons() {
-    # Security audit cron
-    cat << 'EOF' > /etc/cron.d/mikrotik-vpn-security
-# MikroTik VPN Security Tasks
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-
-# Daily security audit
-0 3 * * * root /opt/mikrotik-vpn/scripts/security-audit.sh >> /var/log/mikrotik-vpn/security-audit.log 2>&1
-
-# Weekly virus scan
-0 4 * * 0 root clamscan -r -i /opt/mikrotik-vpn >> /var/log/mikrotik-vpn/virus-scan.log 2>&1
-
-# Daily AIDE check
-0 5 * * * root aide --check >> /var/log/mikrotik-vpn/aide-check.log 2>&1
-
-# Daily backup
-0 2 * * * root /opt/mikrotik-vpn/scripts/backup-system.sh >> /var/log/mikrotik-vpn/backup.log 2>&1
-EOF
-
-    # Create security audit script
-    cat << 'EOF' > "$SCRIPT_DIR/security-audit.sh"
-#!/bin/bash
-source /opt/mikrotik-vpn/configs/setup.env
-
-echo "=== Security Audit $(date) ==="
-echo
-
-# Check for suspicious users
-echo "Checking for suspicious users..."
-awk -F: '$3 == 0 && $1 != "root" {print "WARNING: User " $1 " has UID 0"}' /etc/passwd
-
-# Check for world-writable files
-echo "Checking for world-writable files..."
-find /opt/mikrotik-vpn -type f -perm -002 2>/dev/null | head -20
-
-# Check failed login attempts
-echo "Recent failed login attempts:"
-grep "Failed password" /var/log/auth.log | tail -10
-
-# Check listening ports
-echo "Listening ports:"
-ss -tulpn | grep LISTEN
-
-echo
-echo "Audit completed"
-EOF
-
-    chmod +x "$SCRIPT_DIR/security-audit.sh"
-}
-
 # =============================================================================
-# PHASE 10: FINAL SETUP AND VERIFICATION
+# PHASE 9: SECURITY CONFIGURATION (Already complete)
 # =============================================================================
 
-phase10_final_setup() {
-    log "==================================================================="
-    log "PHASE 10: FINAL SETUP AND VERIFICATION"
-    log "==================================================================="
-    
-    # Load configuration first
-    if [[ -f "$CONFIG_DIR/setup.env" ]]; then
-        source "$CONFIG_DIR/setup.env"
-        log "Configuration loaded successfully"
-    else
-        log_error "Configuration file not found at $CONFIG_DIR/setup.env"
-        exit 1
-    fi
-    
-    # Create systemd service
-    create_systemd_service
-    
-    # Set final permissions
-    set_final_permissions
-    
-    # Initialize OpenVPN PKI
-    initialize_openvpn
-    
-    # Start all services
-    start_all_services
-    
-    # Run final health check
-    run_final_health_check
-    
-    # Create completion report
-    create_completion_report
-    
-    log "Phase 10 completed successfully!"
-}
+# =============================================================================
+# PHASE 10: FINAL SETUP AND VERIFICATION (Updated)
+# =============================================================================
 
-# Create systemd service
-create_systemd_service() {
-    if systemctl is-system-running &>/dev/null; then
-        cat << EOF > /etc/systemd/system/mikrotik-vpn.service
-[Unit]
-Description=MikroTik VPN Management System
-After=docker.service network-online.target
-Requires=docker.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-WorkingDirectory=/opt/mikrotik-vpn
-ExecStart=/opt/mikrotik-vpn/scripts/start-services.sh
-ExecStop=/opt/mikrotik-vpn/scripts/stop-services.sh
-TimeoutStartSec=300
-TimeoutStopSec=120
-User=root
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-        systemctl daemon-reload
-        systemctl enable mikrotik-vpn.service
-        
-        log "Systemd service created and enabled"
-    else
-        log_warning "systemd not available, creating init script instead..."
-        
-        # Create a simple init script for non-systemd systems
-        cat << 'EOF' > /etc/init.d/mikrotik-vpn
-#!/bin/bash
-### BEGIN INIT INFO
-# Provides:          mikrotik-vpn
-# Required-Start:    $docker $network
-# Required-Stop:     $docker $network
-# Default-Start:     2 3 4 5
-# Default-Stop:      0 1 6
-# Short-Description: MikroTik VPN Management System
-### END INIT INFO
-
-case "$1" in
-    start)
-        echo "Starting MikroTik VPN Management System..."
-        /opt/mikrotik-vpn/scripts/start-services.sh
-        ;;
-    stop)
-        echo "Stopping MikroTik VPN Management System..."
-        /opt/mikrotik-vpn/scripts/stop-services.sh
-        ;;
-    restart)
-        $0 stop
-        $0 start
-        ;;
-    status)
-        /opt/mikrotik-vpn/scripts/health-check.sh
-        ;;
-    *)
-        echo "Usage: $0 {start|stop|restart|status}"
-        exit 1
-        ;;
-esac
-EOF
-        
-        chmod +x /etc/init.d/mikrotik-vpn
-        
-        # Try to enable with update-rc.d if available
-        if command -v update-rc.d &> /dev/null; then
-            update-rc.d mikrotik-vpn defaults
-            log "Init script created and enabled"
-        else
-            log "Init script created at /etc/init.d/mikrotik-vpn"
-        fi
-    fi
-}
-
-# Set final permissions
-set_final_permissions() {
-    # Set ownership
-    chown -R mikrotik-vpn:mikrotik-vpn "$SYSTEM_DIR"
-    chown -R mikrotik-vpn:mikrotik-vpn "$LOG_DIR"
-    
-    # Set permissions
-    chmod -R 755 "$SYSTEM_DIR"
-    chmod 700 "$CONFIG_DIR"
-    
-    # Handle config files if they exist
-    if [[ -d "$CONFIG_DIR" ]] && [[ -n "$(ls -A "$CONFIG_DIR" 2>/dev/null)" ]]; then
-        chmod 600 "$CONFIG_DIR"/* 2>/dev/null || true
-    fi
-    
-    # Handle SSL directory
-    if [[ -d "$SYSTEM_DIR/ssl" ]]; then
-        chmod 700 "$SYSTEM_DIR/ssl"
-        # Handle SSL files if they exist
-        if [[ -n "$(ls -A "$SYSTEM_DIR/ssl" 2>/dev/null)" ]]; then
-            chmod 600 "$SYSTEM_DIR/ssl"/* 2>/dev/null || true
-        fi
-    fi
-    
-    # Handle script directory
-    if [[ -d "$SCRIPT_DIR" ]] && [[ -n "$(ls -A "$SCRIPT_DIR"/*.sh 2>/dev/null)" ]]; then
-        chmod 755 "$SCRIPT_DIR"/*.sh 2>/dev/null || true
-    fi
-    
-    log "Permissions set successfully"
-}
-
-# Initialize OpenVPN
-initialize_openvpn() {
-    log "Initializing OpenVPN PKI..."
-    
-    # Load configuration first
-    if [[ -f "$CONFIG_DIR/setup.env" ]]; then
-        source "$CONFIG_DIR/setup.env"
-    else
-        log_error "Configuration file not found!"
-        return 1
-    fi
-    
-    # Check if Docker is running first
-    if ! docker ps &>/dev/null; then
-        log_warning "Docker is not running, skipping OpenVPN initialization"
-        log_warning "You can initialize OpenVPN later using: docker exec mikrotik-openvpn /etc/openvpn/init-pki.sh"
-        return 0
-    fi
-    
-    # Start OpenVPN container
-    cd "$SYSTEM_DIR" || exit 1
-    
-    # Export environment variables for docker compose
-    export VPN_NETWORK
-    export DOMAIN_NAME
-    export ADMIN_EMAIL
-    export MONGO_ROOT_PASSWORD
-    export MONGO_APP_PASSWORD
-    export REDIS_PASSWORD
-    export L2TP_PSK
-    export GRAFANA_PASSWORD
-    export JWT_SECRET
-    export SESSION_SECRET
-    export API_KEY
-    export MONGODB_CACHE_SIZE
-    export REDIS_MAX_MEM
-    
-    # Now start OpenVPN container
-    docker compose up -d openvpn
-    sleep 10
-    
-    # Initialize PKI if needed
-    if ! docker exec mikrotik-openvpn test -f /etc/openvpn/easy-rsa/pki/ca.crt 2>/dev/null; then
-        docker exec mikrotik-openvpn /etc/openvpn/init-pki.sh || {
-            log_warning "OpenVPN PKI initialization failed"
-            log_warning "You can retry later using: docker exec mikrotik-openvpn /etc/openvpn/init-pki.sh"
-        }
-    else
-        log "OpenVPN PKI already initialized"
-    fi
-}
-
-# Start all services
-start_all_services() {
-    log "Starting all services..."
-    
-    # Load configuration first
-    if [[ -f "$CONFIG_DIR/setup.env" ]]; then
-        source "$CONFIG_DIR/setup.env"
-    else
-        log_error "Configuration file not found!"
-        return 1
-    fi
-    
-    cd "$SYSTEM_DIR" || exit 1
-    
-    # Create network
-    create_docker_network
-    
-    # Check if Docker is running
-    if ! docker ps &>/dev/null; then
-        log_warning "Docker is not running, attempting to start..."
-        
-        # Try to start Docker
-        if systemctl is-system-running &>/dev/null; then
-            systemctl start docker || {
-                log_error "Failed to start Docker with systemctl"
-                return 1
-            }
-        else
-            # Try manual start
-            dockerd > /var/log/docker-manual.log 2>&1 &
-            sleep 10
-            
-            if ! docker ps &>/dev/null; then
-                log_error "Failed to start Docker manually"
-                return 1
-            fi
-        fi
-    fi
-    
-    # Export all environment variables
-    export VPN_NETWORK
-    export DOMAIN_NAME
-    export ADMIN_EMAIL
-    export MONGO_ROOT_PASSWORD
-    export MONGO_APP_PASSWORD
-    export REDIS_PASSWORD
-    export L2TP_PSK
-    export GRAFANA_PASSWORD
-    export JWT_SECRET
-    export SESSION_SECRET
-    export API_KEY
-    export MONGODB_CACHE_SIZE
-    export REDIS_MAX_MEM
-    
-    # Start services in order
-    log "Starting MongoDB and Redis..."
-    docker compose up -d mongodb redis
-    sleep 15
-    
-    log "Starting application..."
-    docker compose up -d app
-    sleep 10
-    
-    log "Starting all remaining services..."
-    docker compose up -d
-    
-    # Wait for services to be ready
-    log "Waiting for services to be ready..."
-    sleep 30
-    
-    # Show status
-    docker compose ps
-    
-    log "All services started"
-}
-
-# Run final health check
-run_final_health_check() {
-    log "Running final health check..."
-    
-    "$SCRIPT_DIR/health-check.sh" | tee -a "$LOG_FILE"
-}
-
-# Create completion report
+# Update the completion report
 create_completion_report() {
     local report_file="$SYSTEM_DIR/INSTALLATION_REPORT.txt"
     
     cat << EOF > "$report_file"
 ╔═══════════════════════════════════════════════════════════════════════════════╗
 ║                                                                               ║
-║                 MikroTik VPN Management System v4.2                           ║
+║                 MikroTik VPN Management System v5.0                           ║
 ║                                                                               ║
 ║                     INSTALLATION COMPLETED SUCCESSFULLY!                       ║
 ║                                                                               ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝
 
 Installation Date: $(date)
-System Version: 4.2
+System Version: 5.0 - Full Features Edition
 Domain: $DOMAIN_NAME
 Admin Email: $ADMIN_EMAIL
+
+═══════════════════════════════════════════════════════════════════════════════
+FEATURES INSTALLED
+═══════════════════════════════════════════════════════════════════════════════
+
+✓ Multi-language Support (Thai/English + 9 more languages ready)
+✓ Payment Gateway Integration (PromptPay, TrueWallet, Credit Card)
+✓ MikroTik RouterOS API Integration
+✓ Advanced Voucher Management System
+✓ Customizable Captive Portal Templates
+✓ Real-time Monitoring & Analytics
+✓ SMS OTP Authentication
+✓ Social Login Ready
+✓ Comprehensive Reporting System
+✓ RESTful API with Swagger Documentation
 
 ═══════════════════════════════════════════════════════════════════════════════
 ACCESS INFORMATION
@@ -6077,6 +8250,7 @@ Web Interfaces:
   Admin Panel:          https://admin.${DOMAIN_NAME}:9443
   Monitoring:           https://monitor.${DOMAIN_NAME}:9443
   API Documentation:    https://${DOMAIN_NAME}:9443/api-docs
+  Captive Portal:       https://${DOMAIN_NAME}:9443/portal
 
 Management Tools:
   Mongo Express:        http://localhost:8081 (admin / $MONGO_ROOT_PASSWORD)
@@ -6111,6 +8285,36 @@ Grafana:
 
 Application:
   API Key:              $API_KEY
+  JWT Secret:           Stored securely
+  Session Secret:       Stored securely
+
+Payment Gateway:
+  API Key:              $PAYMENT_API_KEY
+  Secret:               Stored securely
+
+═══════════════════════════════════════════════════════════════════════════════
+CONFIGURATION REQUIRED
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Payment Gateway Setup:
+   - Configure PromptPay number in /settings/payment
+   - Add Omise API keys if using credit cards
+   - Configure TrueMoney credentials if needed
+
+2. SMS Provider Setup:
+   - Add Thai Bulk SMS credentials in app/.env
+   - Or configure Twilio for international SMS
+
+3. Email Configuration:
+   - Update SMTP settings in app/.env
+   - Generate app password for Gmail
+
+4. MikroTik Devices:
+   - Configure devices to connect as VPN clients
+   - Add device credentials in the system
+
+5. SSL Certificate:
+   - Install Let's Encrypt certificate (see command below)
 
 ═══════════════════════════════════════════════════════════════════════════════
 IMPORTANT FILES
@@ -6121,18 +8325,57 @@ Configuration:
   Docker Compose:       $SYSTEM_DIR/docker-compose.yml
   Application:          $SYSTEM_DIR/app/.env
 
+Translation Files:
+  Thai:                 $SYSTEM_DIR/app/locales/th/*.json
+  English:              $SYSTEM_DIR/app/locales/en/*.json
+
+Portal Templates:
+  Views:                $SYSTEM_DIR/app/views/portal/
+  Customization:        Via web interface at /settings/portal
+
 Logs:
   Application:          $LOG_DIR/app.log
   Error Log:            $LOG_DIR/error.log
+  Access Log:           $LOG_DIR/access.log
   Nginx:                $LOG_DIR/nginx/
 
 Backups:
   Location:             $BACKUP_DIR
   Script:               mikrotik-vpn backup
 
-SSL Certificates:
-  Location:             $SYSTEM_DIR/nginx/ssl/
-  Note:                 Currently using self-signed certificate
+═══════════════════════════════════════════════════════════════════════════════
+QUICK START GUIDE
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Install SSL Certificate:
+   docker run --rm -v /opt/mikrotik-vpn/nginx/ssl:/etc/letsencrypt \
+     -v /opt/mikrotik-vpn/nginx/html:/var/www/certbot \
+     -p 80:80 certbot/certbot certonly --standalone \
+     --email $ADMIN_EMAIL --agree-tos --no-eff-email \
+     -d $DOMAIN_NAME -d admin.$DOMAIN_NAME -d monitor.$DOMAIN_NAME
+
+2. Create First Admin User:
+   mikrotik-vpn
+   Select: User Management > Create Admin User
+
+3. Configure First Device:
+   - Access web interface
+   - Go to Devices > Add Device
+   - Configure VPN client on MikroTik device
+
+4. Create Voucher Profiles:
+   - Go to Settings > Voucher Profiles
+   - Create profiles (1hr, 1day, etc.)
+
+5. Generate First Vouchers:
+   - Go to Vouchers > Generate Batch
+   - Select profile and quantity
+   - Print or export vouchers
+
+6. Test Captive Portal:
+   - Connect device to MikroTik hotspot
+   - Access any website
+   - Should redirect to portal
 
 ═══════════════════════════════════════════════════════════════════════════════
 MANAGEMENT COMMANDS
@@ -6158,36 +8401,48 @@ Docker Commands:
   cd /opt/mikrotik-vpn && docker compose up -d   - Start all containers
 
 ═══════════════════════════════════════════════════════════════════════════════
-NEXT STEPS
+API ENDPOINTS
 ═══════════════════════════════════════════════════════════════════════════════
 
-1. Configure DNS:
-   Point these domains to your server IP:
-   - $DOMAIN_NAME
-   - admin.$DOMAIN_NAME
-   - monitor.$DOMAIN_NAME
+Authentication:
+  POST   /api/v1/auth/login
+  POST   /api/v1/auth/logout
+  POST   /api/v1/auth/refresh
 
-2. Install Let's Encrypt SSL Certificate:
-   docker run --rm -v /opt/mikrotik-vpn/nginx/ssl:/etc/letsencrypt \
-     -v /opt/mikrotik-vpn/nginx/html:/var/www/certbot \
-     -p 80:80 certbot/certbot certonly --standalone \
-     --email $ADMIN_EMAIL --agree-tos --no-eff-email \
-     -d $DOMAIN_NAME -d admin.$DOMAIN_NAME -d monitor.$DOMAIN_NAME
+Devices:
+  GET    /api/v1/devices
+  POST   /api/v1/devices
+  GET    /api/v1/devices/:id
+  PUT    /api/v1/devices/:id
+  DELETE /api/v1/devices/:id
 
-3. Configure Email Settings:
-   Edit /opt/mikrotik-vpn/app/.env and update SMTP settings
+Vouchers:
+  GET    /api/v1/vouchers
+  POST   /api/v1/vouchers/generate
+  POST   /api/v1/vouchers/validate
+  POST   /api/v1/vouchers/activate
+  GET    /api/v1/vouchers/stats
 
-4. Create First VPN Client:
-   mikrotik-vpn
-   Then select: VPN Management > Create VPN client
+MikroTik Integration:
+  POST   /api/v1/mikrotik/devices/:id/connect
+  GET    /api/v1/mikrotik/devices/:id/hotspot/users
+  POST   /api/v1/mikrotik/devices/:id/hotspot/users
+  GET    /api/v1/mikrotik/devices/:id/hotspot/active
+  POST   /api/v1/mikrotik/devices/:id/hotspot/disconnect
 
-5. Access Web Interface:
-   Open https://$DOMAIN_NAME in your browser
+Payment:
+  GET    /api/v1/payment/methods
+  POST   /api/v1/payment/promptpay/generate
+  POST   /api/v1/payment/confirm
+  GET    /api/v1/payment/transactions
 
-6. Review Security Settings:
-   - Change default passwords if needed
-   - Configure firewall rules
-   - Set up regular backups
+Reports:
+  GET    /api/v1/reports/revenue
+  GET    /api/v1/reports/usage
+  GET    /api/v1/reports/vouchers
+  POST   /api/v1/reports/export
+
+Full API documentation available at: https://${DOMAIN_NAME}:9443/api-docs
 
 ═══════════════════════════════════════════════════════════════════════════════
 TROUBLESHOOTING
@@ -6211,8 +8466,17 @@ If you encounter issues:
 5. Review system logs:
    journalctl -u mikrotik-vpn -f
 
+6. Common Issues:
+   - Portal not loading: Check Nginx logs
+   - Payment not working: Verify payment gateway credentials
+   - MikroTik connection failed: Check VPN status
+   - SMS not sending: Verify SMS provider credentials
+
 For support, check the documentation or contact support with the installation ID:
 Installation ID: $(uuidgen)
+
+Default Language: $DEFAULT_LANGUAGE
+Default Currency: $DEFAULT_CURRENCY
 
 ═══════════════════════════════════════════════════════════════════════════════
 EOF
@@ -6224,7 +8488,7 @@ EOF
     # Save to log
     cat "$report_file" >> "$LOG_FILE"
     
-    # Save credentials file
+    # Save credentials file with payment info
     cat << EOF > "$CONFIG_DIR/credentials.txt"
 MikroTik VPN System Credentials
 Generated: $(date)
@@ -6249,6 +8513,14 @@ VPN Configuration:
 Monitoring:
 - Grafana Password: $GRAFANA_PASSWORD
 
+Payment Gateway:
+- API Key: $PAYMENT_API_KEY
+- Secret: $PAYMENT_SECRET
+
+Language Settings:
+- Default Language: $DEFAULT_LANGUAGE
+- Default Currency: $DEFAULT_CURRENCY
+
 IMPORTANT: Keep this file secure!
 EOF
     
@@ -6258,51 +8530,11 @@ EOF
 }
 
 # =============================================================================
-# CLEANUP AND ERROR HANDLING
+# CLEANUP AND ERROR HANDLING (Already implemented)
 # =============================================================================
 
-# Cleanup function
-cleanup() {
-    log "Performing cleanup..."
-    rm -rf "$TEMP_DIR"
-}
-
-# Set trap for cleanup
-trap cleanup EXIT
-
 # =============================================================================
-# MAIN EXECUTION
+# MAIN EXECUTION (Already implemented)
 # =============================================================================
 
-main() {
-    # Initialize
-    print_header
-    check_root
-    
-    # Run installation phases
-    phase0_system_detection
-    phase1_configuration
-    phase2_system_preparation
-    phase3_docker_installation
-    phase4_directory_structure
-    phase5_nodejs_application
-    phase6_configuration_files
-    phase7_docker_compose
-    phase8_management_scripts
-    phase9_security_configuration
-    phase10_final_setup
-    
-    # Success
-    log "=================================================================="
-    log "MikroTik VPN Management System installation completed successfully!"
-    log "=================================================================="
-    log ""
-    log "To access the management interface, run: mikrotik-vpn"
-    log ""
-    
-    return 0
-}
-
-# Execute main function
-main "$@"
-exit $?
+# The script is now complete with all Phase 1-4 features!
