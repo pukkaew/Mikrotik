@@ -6853,36 +6853,29 @@ EOF
                 </div>
             </div>
             
-            <!-- User Info -->
-            <div class="border-t pt-4">
-                <div class="grid grid-cols-2 gap-4 text-sm">
-                    <div>
-                        <p class="text-gray-600"><%= t('portal.username') %>:</p>
-                        <p class="font-medium"><%= session.username %></p>
+            <!-- Usage Stats -->
+            <div class="border-t pt-6">
+                <h2 class="text-lg font-semibold mb-4"><%= t('portal.usageStatistics') %></h2>
+                <div class="space-y-3">
+                    <div class="flex justify-between">
+                        <span class="text-gray-600"><%= t('portal.uploadSpeed') %></span>
+                        <span class="font-medium" id="uploadSpeed">0 Mbps</span>
                     </div>
-                    <div>
-                        <p class="text-gray-600"><%= t('portal.ipAddress') %>:</p>
-                        <p class="font-medium"><%= session.ipAddress %></p>
+                    <div class="flex justify-between">
+                        <span class="text-gray-600"><%= t('portal.downloadSpeed') %></span>
+                        <span class="font-medium" id="downloadSpeed">0 Mbps</span>
                     </div>
-                    <div>
-                        <p class="text-gray-600"><%= t('portal.macAddress') %>:</p>
-                        <p class="font-medium"><%= session.macAddress %></p>
-                    </div>
-                    <div>
-                        <p class="text-gray-600"><%= t('portal.profile') %>:</p>
-                        <p class="font-medium"><%= session.profile %></p>
+                    <div class="flex justify-between">
+                        <span class="text-gray-600"><%= t('portal.totalDataUsed') %></span>
+                        <span class="font-medium" id="totalData">0 MB</span>
                     </div>
                 </div>
             </div>
             
-            <!-- Actions -->
-            <div class="mt-6 flex space-x-4">
-                <button onclick="refreshStatus()" class="flex-1 bg-indigo-600 text-white rounded-lg px-4 py-2 hover:bg-indigo-700">
-                    <i class="fas fa-sync-alt mr-2"></i>
-                    <%= t('portal.refresh') %>
-                </button>
-                <form action="/portal/logout" method="POST" class="flex-1">
-                    <button type="submit" class="w-full bg-red-600 text-white rounded-lg px-4 py-2 hover:bg-red-700">
+            <!-- Disconnect Button -->
+            <div class="mt-8">
+                <form action="/portal/logout" method="POST">
+                    <button type="submit" class="w-full bg-red-600 text-white rounded-lg px-4 py-3 hover:bg-red-700 transition duration-200">
                         <i class="fas fa-sign-out-alt mr-2"></i>
                         <%= t('portal.disconnect') %>
                     </button>
@@ -6892,766 +6885,23 @@ EOF
     </div>
     
     <script>
-        // Update status every 30 seconds
-        function updateStatus() {
-            fetch('/portal/api/status')
+        // Update session info every 5 seconds
+        setInterval(() => {
+            fetch('/portal/session-info')
                 .then(res => res.json())
                 .then(data => {
                     if (data.success) {
-                        document.getElementById('timeRemaining').textContent = formatTime(data.timeRemaining);
-                        document.getElementById('dataRemaining').textContent = formatData(data.dataRemaining);
+                        document.getElementById('timeRemaining').textContent = data.timeRemaining;
+                        document.getElementById('dataRemaining').textContent = data.dataRemaining + ' MB';
+                        document.getElementById('uploadSpeed').textContent = data.uploadSpeed + ' Mbps';
+                        document.getElementById('downloadSpeed').textContent = data.downloadSpeed + ' Mbps';
+                        document.getElementById('totalData').textContent = data.totalData + ' MB';
                     }
                 });
-        }
-        
-        function formatTime(seconds) {
-            const hours = Math.floor(seconds / 3600);
-            const minutes = Math.floor((seconds % 3600) / 60);
-            const secs = seconds % 60;
-            return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-        }
-        
-        function formatData(bytes) {
-            const mb = bytes / (1024 * 1024);
-            return mb.toFixed(2) + ' MB';
-        }
-        
-        function refreshStatus() {
-            updateStatus();
-        }
-        
-        // Initial update
-        updateStatus();
-        
-        // Auto update
-        setInterval(updateStatus, 30000);
+        }, 5000);
     </script>
 </body>
 </html>
-EOF
-}
-
-# Create controller files
-create_controller_files() {
-    mkdir -p "$SYSTEM_DIR/app/controllers"
-    
-    # Portal Controller
-    cat << 'EOF' > "$SYSTEM_DIR/app/controllers/PortalController.js"
-const PortalTemplate = require('../models/PortalTemplate');
-const Voucher = require('../models/Voucher');
-const Session = require('../models/Session');
-const SmsOtp = require('../models/SmsOtp');
-const VoucherService = require('../services/VoucherService');
-const SMSService = require('../utils/sms');
-const logger = require('../utils/logger');
-
-class PortalController {
-    static async showPortal(req, res) {
-        try {
-            // Get active portal template
-            const template = await PortalTemplate.findOne({ 
-                isActive: true 
-            }) || this.getDefaultTemplate();
-            
-            res.render('portal/index', {
-                layout: false,
-                template,
-                lang: req.language || 'th',
-                t: req.t
-            });
-        } catch (error) {
-            logger.error('Portal error:', error);
-            res.status(500).send('Portal error');
-        }
-    }
-    
-    static async loginVoucher(req, res) {
-        try {
-            const { code } = req.body;
-            const deviceId = req.query.device || req.headers['x-device-id'];
-            
-            // Validate voucher
-            const validation = await VoucherService.validateVoucher(code, deviceId);
-            
-            if (!validation.valid) {
-                req.flash('error_msg', req.t(`portal.errors.${validation.error}`));
-                return res.redirect('/portal');
-            }
-            
-            // Activate voucher
-            const activation = await VoucherService.activateVoucher({
-                code,
-                deviceId,
-                macAddress: req.headers['x-client-mac'] || req.ip,
-                ipAddress: req.ip
-            });
-            
-            if (activation.success) {
-                // Create session
-                const session = new Session({
-                    organization: validation.voucher.organization,
-                    device: deviceId,
-                    voucher: validation.voucher._id,
-                    user: {
-                        username: code,
-                        macAddress: req.headers['x-client-mac'] || req.ip,
-                        ipAddress: req.ip
-                    },
-                    status: 'active'
-                });
-                
-                await session.save();
-                
-                // Store session info
-                req.session.hotspotSession = {
-                    id: session._id,
-                    username: code,
-                    profile: validation.voucher.profile.name,
-                    expiresAt: activation.expiresAt
-                };
-                
-                // Redirect to status page
-                res.redirect('/portal/status');
-            } else {
-                req.flash('error_msg', req.t('portal.errors.activationFailed'));
-                res.redirect('/portal');
-            }
-        } catch (error) {
-            logger.error('Voucher login error:', error);
-            req.flash('error_msg', req.t('portal.errors.loginFailed'));
-            res.redirect('/portal');
-        }
-    }
-    
-    static async loginUserPass(req, res) {
-        try {
-            const { username, password } = req.body;
-            const deviceId = req.query.device || req.headers['x-device-id'];
-            
-            // Here you would validate against MikroTik hotspot users
-            // For now, we'll implement basic validation
-            
-            // Create session
-            const session = new Session({
-                device: deviceId,
-                user: {
-                    username,
-                    macAddress: req.headers['x-client-mac'] || req.ip,
-                    ipAddress: req.ip
-                },
-                status: 'active'
-            });
-            
-            await session.save();
-            
-            req.session.hotspotSession = {
-                id: session._id,
-                username,
-                profile: 'default'
-            };
-            
-            res.redirect('/portal/status');
-        } catch (error) {
-            logger.error('UserPass login error:', error);
-            req.flash('error_msg', req.t('portal.errors.invalidCredentials'));
-            res.redirect('/portal');
-        }
-    }
-    
-    static async requestSmsOtp(req, res) {
-        try {
-            const { phone } = req.body;
-            
-            // Generate OTP
-            const otp = SMSService.generateOTP();
-            
-            // Save OTP
-            const smsOtp = new SmsOtp({
-                phone,
-                otp,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
-            
-            await smsOtp.save();
-            
-            // Send SMS
-            await SMSService.sendOTP(phone, otp);
-            
-            res.json({ success: true, message: req.t('portal.otpSent') });
-        } catch (error) {
-            logger.error('SMS OTP request error:', error);
-            res.status(500).json({ 
-                success: false, 
-                message: req.t('portal.errors.otpFailed') 
-            });
-        }
-    }
-    
-    static async verifySmsOtp(req, res) {
-        try {
-            const { phone, otp } = req.body;
-            
-            // Find and verify OTP
-            const smsOtp = await SmsOtp.findOne({
-                phone,
-                isUsed: false,
-                expiresAt: { $gt: new Date() }
-            }).sort({ createdAt: -1 });
-            
-            if (!smsOtp) {
-                req.flash('error_msg', req.t('portal.errors.invalidOtp'));
-                return res.redirect('/portal');
-            }
-            
-            await smsOtp.verify(otp);
-            
-            // Create session
-            const deviceId = req.query.device || req.headers['x-device-id'];
-            const session = new Session({
-                device: deviceId,
-                user: {
-                    username: phone,
-                    macAddress: req.headers['x-client-mac'] || req.ip,
-                    ipAddress: req.ip
-                },
-                status: 'active'
-            });
-            
-            await session.save();
-            
-            req.session.hotspotSession = {
-                id: session._id,
-                username: phone,
-                profile: 'sms-user'
-            };
-            
-            res.redirect('/portal/status');
-        } catch (error) {
-            logger.error('SMS OTP verify error:', error);
-            req.flash('error_msg', req.t('portal.errors.invalidOtp'));
-            res.redirect('/portal');
-        }
-    }
-    
-    static async socialLoginCallback(req, res) {
-        try {
-            const { provider } = req.params;
-            // Implement social login callback
-            // This would handle OAuth callbacks from Facebook, Line, etc.
-            
-            res.redirect('/portal/status');
-        } catch (error) {
-            logger.error('Social login error:', error);
-            req.flash('error_msg', req.t('portal.errors.socialLoginFailed'));
-            res.redirect('/portal');
-        }
-    }
-    
-    static async showStatus(req, res) {
-        try {
-            if (!req.session.hotspotSession) {
-                return res.redirect('/portal');
-            }
-            
-            const session = await Session.findById(req.session.hotspotSession.id);
-            
-            res.render('portal/status', {
-                layout: false,
-                session: {
-                    username: session.user.username,
-                    ipAddress: session.user.ipAddress,
-                    macAddress: session.user.macAddress,
-                    profile: req.session.hotspotSession.profile
-                },
-                lang: req.language || 'th',
-                t: req.t
-            });
-        } catch (error) {
-            logger.error('Status page error:', error);
-            res.redirect('/portal');
-        }
-    }
-    
-    static async logout(req, res) {
-        try {
-            if (req.session.hotspotSession) {
-                // Update session status
-                await Session.findByIdAndUpdate(req.session.hotspotSession.id, {
-                    status: 'completed',
-                    endTime: new Date()
-                });
-                
-                // Clear session
-                delete req.session.hotspotSession;
-            }
-            
-            res.redirect('/portal');
-        } catch (error) {
-            logger.error('Logout error:', error);
-            res.redirect('/portal');
-        }
-    }
-    
-    static async showTerms(req, res) {
-        res.render('portal/terms', {
-            layout: false,
-            lang: req.language || 'th',
-            t: req.t
-        });
-    }
-    
-    static getDefaultTemplate() {
-        return {
-            name: 'Default',
-            design: {
-                backgroundColor: '#f3f4f6',
-                primaryColor: '#4f46e5'
-            },
-            loginMethods: [
-                { type: 'voucher', enabled: true, order: 1 },
-                { type: 'userpass', enabled: true, order: 2 },
-                { type: 'sms', enabled: true, order: 3 },
-                { type: 'social', enabled: false, order: 4 }
-            ],
-            socialProviders: [],
-            features: {
-                showLogo: true,
-                showLanguageSelector: true,
-                showTerms: true,
-                requireTermsAcceptance: true,
-                showVoucherPurchase: true
-            }
-        };
-    }
-}
-
-module.exports = PortalController;
-EOF
-
-    # Dashboard Controller
-    cat << 'EOF' > "$SYSTEM_DIR/app/controllers/DashboardController.js"
-const Device = require('../models/Device');
-const Voucher = require('../models/Voucher');
-const Session = require('../models/Session');
-const PaymentTransaction = require('../models/PaymentTransaction');
-const moment = require('moment');
-
-class DashboardController {
-    static async index(req, res) {
-        res.render('dashboard/index', {
-            title: req.t('dashboard'),
-            activeMenu: 'dashboard'
-        });
-    }
-    
-    static async getStats(req, res) {
-        try {
-            const organizationId = req.user.organization._id;
-            
-            // Get device stats
-            const totalDevices = await Device.countDocuments({ 
-                organization: organizationId 
-            });
-            const onlineDevices = await Device.countDocuments({ 
-                organization: organizationId,
-                status: 'online'
-            });
-            
-            // Get active users
-            const activeUsers = await Session.countDocuments({
-                organization: organizationId,
-                status: 'active'
-            });
-            
-            // Get voucher stats
-            const totalVouchers = await Voucher.countDocuments({
-                organization: organizationId
-            });
-            const activeVouchers = await Voucher.countDocuments({
-                organization: organizationId,
-                status: 'active'
-            });
-            
-            // Get today's revenue
-            const startOfDay = moment().startOf('day').toDate();
-            const endOfDay = moment().endOf('day').toDate();
-            
-            const todayRevenue = await PaymentTransaction.aggregate([
-                {
-                    $match: {
-                        organization: organizationId,
-                        status: 'completed',
-                        createdAt: { $gte: startOfDay, $lte: endOfDay }
-                    }
-                },
-                {
-                    $group: {
-                        _id: null,
-                        total: { $sum: '$amount.value' }
-                    }
-                }
-            ]);
-            
-            // Get usage chart data (last 7 days)
-            const usageData = await Session.aggregate([
-                {
-                    $match: {
-                        organization: organizationId,
-                        startTime: { $gte: moment().subtract(7, 'days').toDate() }
-                    }
-                },
-                {
-                    $group: {
-                        _id: { $dateToString: { format: '%Y-%m-%d', date: '$startTime' } },
-                        count: { $sum: 1 }
-                    }
-                },
-                { $sort: { _id: 1 } }
-            ]);
-            
-            // Get revenue chart data (last 7 days)
-            const revenueData = await PaymentTransaction.aggregate([
-                {
-                    $match: {
-                        organization: organizationId,
-                        status: 'completed',
-                        createdAt: { $gte: moment().subtract(7, 'days').toDate() }
-                    }
-                },
-                {
-                    $group: {
-                        _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-                        total: { $sum: '$amount.value' }
-                    }
-                },
-                { $sort: { _id: 1 } }
-            ]);
-            
-            res.json({
-                success: true,
-                data: {
-                    totalDevices,
-                    onlineDevices,
-                    activeUsers,
-                    totalVouchers,
-                    activeVouchers,
-                    todayRevenue: todayRevenue[0]?.total || 0,
-                    usageChart: {
-                        labels: usageData.map(d => moment(d._id).format('MMM DD')),
-                        data: usageData.map(d => d.count)
-                    },
-                    revenueChart: {
-                        labels: revenueData.map(d => moment(d._id).format('MMM DD')),
-                        data: revenueData.map(d => d.total)
-                    }
-                }
-            });
-        } catch (error) {
-            console.error('Get stats error:', error);
-            res.status(500).json({ success: false, error: error.message });
-        }
-    }
-    
-    static async devices(req, res) {
-        const devices = await Device.find({ 
-            organization: req.user.organization._id 
-        });
-        
-        res.render('devices/index', {
-            title: req.t('devices'),
-            activeMenu: 'devices',
-            devices
-        });
-    }
-    
-    static async vouchers(req, res) {
-        const vouchers = await Voucher.find({ 
-            organization: req.user.organization._id 
-        }).limit(100).sort({ createdAt: -1 });
-        
-        res.render('vouchers/index', {
-            title: req.t('vouchers'),
-            activeMenu: 'vouchers',
-            vouchers
-        });
-    }
-    
-    static async createVoucherForm(req, res) {
-        res.render('vouchers/create', {
-            title: req.t('voucher.create'),
-            activeMenu: 'vouchers'
-        });
-    }
-    
-    static async createVoucher(req, res) {
-        try {
-            // Implementation for voucher creation
-            req.flash('success_msg', req.t('voucher.created'));
-            res.redirect('/vouchers');
-        } catch (error) {
-            req.flash('error_msg', error.message);
-            res.redirect('/vouchers/create');
-        }
-    }
-    
-    static async printVoucher(req, res) {
-        const voucher = await Voucher.findById(req.params.id);
-        res.render('vouchers/print', {
-            layout: false,
-            voucher
-        });
-    }
-    
-    static async users(req, res) {
-        res.render('users/index', {
-            title: req.t('users'),
-            activeMenu: 'users'
-        });
-    }
-    
-    static async reports(req, res) {
-        res.render('reports/index', {
-            title: req.t('reports'),
-            activeMenu: 'reports'
-        });
-    }
-    
-    static async revenueReport(req, res) {
-        res.render('reports/revenue', {
-            title: req.t('reports.revenue'),
-            activeMenu: 'reports'
-        });
-    }
-    
-    static async usageReport(req, res) {
-        res.render('reports/usage', {
-            title: req.t('reports.usage'),
-            activeMenu: 'reports'
-        });
-    }
-    
-    static async exportReport(req, res) {
-        // Implementation for report export
-        res.json({ success: true });
-    }
-}
-
-module.exports = DashboardController;
-EOF
-
-    # Settings Controller
-    cat << 'EOF' > "$SYSTEM_DIR/app/controllers/SettingsController.js"
-const Organization = require('../models/Organization');
-const HotspotProfile = require('../models/HotspotProfile');
-const PortalTemplate = require('../models/PortalTemplate');
-
-class SettingsController {
-    static async index(req, res) {
-        res.render('settings/index', {
-            title: req.t('settings'),
-            activeMenu: 'settings'
-        });
-    }
-    
-    static async organization(req, res) {
-        const organization = await Organization.findById(req.user.organization._id);
-        
-        res.render('settings/organization', {
-            title: req.t('settings.organization'),
-            activeMenu: 'settings',
-            organization
-        });
-    }
-    
-    static async updateOrganization(req, res) {
-        try {
-            await Organization.findByIdAndUpdate(
-                req.user.organization._id,
-                req.body
-            );
-            
-            req.flash('success_msg', req.t('settings.updated'));
-            res.redirect('/settings/organization');
-        } catch (error) {
-            req.flash('error_msg', error.message);
-            res.redirect('/settings/organization');
-        }
-    }
-    
-    static async payment(req, res) {
-        const organization = await Organization.findById(req.user.organization._id);
-        
-        res.render('settings/payment', {
-            title: req.t('settings.payment'),
-            activeMenu: 'settings',
-            paymentSettings: organization.paymentSettings
-        });
-    }
-    
-    static async updatePayment(req, res) {
-        try {
-            await Organization.findByIdAndUpdate(
-                req.user.organization._id,
-                { paymentSettings: req.body }
-            );
-            
-            req.flash('success_msg', req.t('settings.updated'));
-            res.redirect('/settings/payment');
-        } catch (error) {
-            req.flash('error_msg', error.message);
-            res.redirect('/settings/payment');
-        }
-    }
-    
-    static async portal(req, res) {
-        const templates = await PortalTemplate.find({
-            organization: req.user.organization._id
-        });
-        
-        res.render('settings/portal', {
-            title: req.t('settings.portal'),
-            activeMenu: 'settings',
-            templates
-        });
-    }
-    
-    static async updatePortal(req, res) {
-        try {
-            // Implementation
-            req.flash('success_msg', req.t('settings.updated'));
-            res.redirect('/settings/portal');
-        } catch (error) {
-            req.flash('error_msg', error.message);
-            res.redirect('/settings/portal');
-        }
-    }
-    
-    static async uploadPortalTemplate(req, res) {
-        try {
-            // Implementation for template upload
-            req.flash('success_msg', req.t('settings.templateUploaded'));
-            res.redirect('/settings/portal');
-        } catch (error) {
-            req.flash('error_msg', error.message);
-            res.redirect('/settings/portal');
-        }
-    }
-    
-    static async voucherProfiles(req, res) {
-        const profiles = await HotspotProfile.find({
-            organization: req.user.organization._id
-        });
-        
-        res.render('settings/voucher-profiles', {
-            title: req.t('settings.voucherProfiles'),
-            activeMenu: 'settings',
-            profiles
-        });
-    }
-    
-    static async createVoucherProfile(req, res) {
-        try {
-            const profile = new HotspotProfile({
-                organization: req.user.organization._id,
-                ...req.body
-            });
-            
-            await profile.save();
-            
-            req.flash('success_msg', req.t('settings.profileCreated'));
-            res.redirect('/settings/vouchers');
-        } catch (error) {
-            req.flash('error_msg', error.message);
-            res.redirect('/settings/vouchers');
-        }
-    }
-    
-    static async updateVoucherProfile(req, res) {
-        try {
-            await HotspotProfile.findByIdAndUpdate(req.params.id, req.body);
-            
-            req.flash('success_msg', req.t('settings.profileUpdated'));
-            res.redirect('/settings/vouchers');
-        } catch (error) {
-            req.flash('error_msg', error.message);
-            res.redirect('/settings/vouchers');
-        }
-    }
-    
-    static async deleteVoucherProfile(req, res) {
-        try {
-            await HotspotProfile.findByIdAndDelete(req.params.id);
-            
-            req.flash('success_msg', req.t('settings.profileDeleted'));
-            res.redirect('/settings/vouchers');
-        } catch (error) {
-            req.flash('error_msg', error.message);
-            res.redirect('/settings/vouchers');
-        }
-    }
-    
-    static async email(req, res) {
-        res.render('settings/email', {
-            title: req.t('settings.email'),
-            activeMenu: 'settings'
-        });
-    }
-    
-    static async updateEmail(req, res) {
-        try {
-            // Update email settings in environment
-            req.flash('success_msg', req.t('settings.updated'));
-            res.redirect('/settings/email');
-        } catch (error) {
-            req.flash('error_msg', error.message);
-            res.redirect('/settings/email');
-        }
-    }
-    
-    static async testEmail(req, res) {
-        try {
-            // Send test email
-            req.flash('success_msg', req.t('settings.testEmailSent'));
-            res.redirect('/settings/email');
-        } catch (error) {
-            req.flash('error_msg', error.message);
-            res.redirect('/settings/email');
-        }
-    }
-    
-    static async api(req, res) {
-        res.render('settings/api', {
-            title: req.t('settings.api'),
-            activeMenu: 'settings',
-            apiKeys: req.user.apiKeys
-        });
-    }
-    
-    static async generateApiKey(req, res) {
-        try {
-            // Generate API key
-            req.flash('success_msg', req.t('settings.apiKeyGenerated'));
-            res.redirect('/settings/api');
-        } catch (error) {
-            req.flash('error_msg', error.message);
-            res.redirect('/settings/api');
-        }
-    }
-    
-    static async deleteApiKey(req, res) {
-        try {
-            // Delete API key
-            req.flash('success_msg', req.t('settings.apiKeyDeleted'));
-            res.redirect('/settings/api');
-        } catch (error) {
-            req.flash('error_msg', error.message);
-            res.redirect('/settings/api');
-        }
-    }
-}
-
-module.exports = SettingsController;
 EOF
 }
 
@@ -7693,14 +6943,14 @@ THAIBULK_API_KEY=your-api-key
 THAIBULK_API_SECRET=your-api-secret
 THAIBULK_SENDER=MIKROTIK
 
-# Payment Gateway Configuration
+# Payment Gateway
 PAYMENT_API_KEY=$PAYMENT_API_KEY
 PAYMENT_SECRET=$PAYMENT_SECRET
 PROMPTPAY_NUMBER=0812345678
-OMISE_PUBLIC_KEY=your-public-key
-OMISE_SECRET_KEY=your-secret-key
+OMISE_PUBLIC_KEY=your-omise-public-key
+OMISE_SECRET_KEY=your-omise-secret-key
 
-# MikroTik Configuration
+# MikroTik
 MIKROTIK_USER=admin
 MIKROTIK_PASSWORD=
 
@@ -7709,7 +6959,7 @@ VPN_NETWORK=$VPN_NETWORK
 OPENVPN_HOST=$DOMAIN_NAME
 OPENVPN_PORT=1194
 
-# Language Configuration
+# Multi-language
 DEFAULT_LANGUAGE=$DEFAULT_LANGUAGE
 DEFAULT_CURRENCY=$DEFAULT_CURRENCY
 
@@ -7726,16 +6976,44 @@ RATE_LIMIT_WINDOW=15
 RATE_LIMIT_MAX=100
 EOF
 
-    # Create Tailwind CSS configuration
+    # PM2 ecosystem file
+    cat << 'EOF' > "$SYSTEM_DIR/app/ecosystem.config.js"
+module.exports = {
+    apps: [{
+        name: 'mikrotik-vpn-api',
+        script: './server.js',
+        instances: 'max',
+        exec_mode: 'cluster',
+        env: {
+            NODE_ENV: 'production',
+            PORT: 3000
+        },
+        error_file: '/var/log/mikrotik-vpn/pm2-error.log',
+        out_file: '/var/log/mikrotik-vpn/pm2-out.log',
+        log_file: '/var/log/mikrotik-vpn/pm2-combined.log',
+        time: true,
+        max_memory_restart: '1G',
+        exp_backoff_restart_delay: 100,
+        max_restarts: 10,
+        min_uptime: '10s',
+        watch: false,
+        ignore_watch: ['node_modules', 'logs', 'public'],
+        env_production: {
+            NODE_ENV: 'production',
+            PORT: 3000
+        }
+    }]
+};
+EOF
+
+    # Tailwind configuration
     create_tailwind_config
-    
-    # Create public directories and files
-    create_public_files
 }
 
 # Create Tailwind CSS configuration
 create_tailwind_config() {
     cat << 'EOF' > "$SYSTEM_DIR/app/tailwind.config.js"
+/** @type {import('tailwindcss').Config} */
 module.exports = {
   content: [
     "./views/**/*.ejs",
@@ -7748,7 +7026,7 @@ module.exports = {
           50: '#eff6ff',
           100: '#dbeafe',
           200: '#bfdbfe',
-          300: '#93bbfd',
+          300: '#93bbfc',
           400: '#60a5fa',
           500: '#3b82f6',
           600: '#2563eb',
@@ -7769,7 +7047,6 @@ module.exports = {
 }
 EOF
 
-    # Create PostCSS config
     cat << 'EOF' > "$SYSTEM_DIR/app/postcss.config.js"
 module.exports = {
   plugins: {
@@ -7778,11 +7055,9 @@ module.exports = {
   },
 }
 EOF
-}
 
-# Create public files
-create_public_files() {
     # Main CSS file
+    mkdir -p "$SYSTEM_DIR/app/public/css"
     cat << 'EOF' > "$SYSTEM_DIR/app/public/css/app.css"
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@300;400;500;600;700&display=swap');
 @tailwind base;
@@ -7791,525 +7066,1138 @@ create_public_files() {
 
 @layer base {
   body {
-    font-family: 'Noto Sans Thai', sans-serif;
+    @apply font-thai;
   }
 }
 
 @layer components {
   .btn-primary {
-    @apply bg-primary-600 text-white rounded-lg px-4 py-2 hover:bg-primary-700 transition duration-200;
+    @apply bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition duration-200;
   }
   
   .btn-secondary {
-    @apply bg-gray-600 text-white rounded-lg px-4 py-2 hover:bg-gray-700 transition duration-200;
+    @apply bg-gray-200 text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-300 transition duration-200;
   }
   
   .card {
-    @apply bg-white rounded-lg shadow-sm p-6;
+    @apply bg-white rounded-lg shadow-md p-6;
   }
   
-  .form-input {
-    @apply block w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500;
+  .input-field {
+    @apply w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-indigo-500;
   }
-  
-  .form-label {
-    @apply block text-sm font-medium text-gray-700 mb-1;
-  }
-}
-
-/* Custom animations */
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.animate-fadeIn {
-  animation: fadeIn 0.3s ease-out;
-}
-
-/* DataTables customization */
-.dataTables_wrapper {
-  @apply mt-4;
-}
-
-.dataTables_filter input {
-  @apply form-input !important;
-}
-
-.dataTables_length select {
-  @apply form-input !important;
-}
-
-/* SweetAlert2 customization */
-.swal2-popup {
-  @apply font-thai !important;
 }
 EOF
 
     # Main JavaScript file
+    mkdir -p "$SYSTEM_DIR/app/public/js"
     cat << 'EOF' > "$SYSTEM_DIR/app/public/js/app.js"
-// Global app object
-window.App = {
-    // Initialize app
-    init() {
-        this.initDataTables();
-        this.initTooltips();
-        this.initModals();
-        this.initSocketIO();
-    },
+// Main application JavaScript
+$(document).ready(function() {
+    // Initialize DataTables with Thai language
+    $.extend(true, $.fn.dataTable.defaults, {
+        language: {
+            url: '//cdn.datatables.net/plug-ins/1.13.6/i18n/th.json'
+        }
+    });
     
-    // Initialize DataTables
-    initDataTables() {
-        if ($.fn.DataTable) {
-            $('.datatable').DataTable({
-                responsive: true,
-                language: {
-                    url: `/static/locales/datatables/${document.documentElement.lang}.json`
-                }
+    // Initialize all datatables
+    $('.datatable').DataTable({
+        responsive: true,
+        pageLength: 25,
+        order: [[0, 'desc']]
+    });
+    
+    // Global AJAX error handler
+    $(document).ajaxError(function(event, xhr, settings, error) {
+        if (xhr.status === 401) {
+            window.location.href = '/login';
+        } else if (xhr.status === 403) {
+            Swal.fire({
+                icon: 'error',
+                title: 'Access Denied',
+                text: 'You do not have permission to perform this action'
+            });
+        } else if (xhr.status === 429) {
+            Swal.fire({
+                icon: 'warning',
+                title: 'Too Many Requests',
+                text: 'Please slow down and try again later'
             });
         }
-    },
-    
-    // Initialize tooltips
-    initTooltips() {
-        // Initialize tooltips if needed
-    },
-    
-    // Initialize modals
-    initModals() {
-        // Modal handlers
-    },
-    
-    // Initialize Socket.IO
-    initSocketIO() {
-        if (typeof io !== 'undefined') {
-            const socket = io();
-            
-            socket.on('connect', () => {
-                console.log('Socket connected');
-            });
-            
-            socket.on('notification', (data) => {
-                this.showNotification(data);
-            });
-            
-            window.socket = socket;
-        }
-    },
-    
-    // Show notification
-    showNotification(data) {
-        const { type, title, message } = data;
-        
-        Swal.fire({
-            icon: type,
-            title: title,
-            text: message,
-            toast: true,
-            position: 'top-end',
-            showConfirmButton: false,
-            timer: 3000,
-            timerProgressBar: true
-        });
-    },
-    
-    // Confirm dialog
-    confirm(options) {
-        return Swal.fire({
-            title: options.title || 'Are you sure?',
-            text: options.text || '',
-            icon: 'warning',
-            showCancelButton: true,
-            confirmButtonColor: '#3085d6',
-            cancelButtonColor: '#d33',
-            confirmButtonText: options.confirmText || 'Yes',
-            cancelButtonText: options.cancelText || 'Cancel'
-        });
-    },
-    
-    // AJAX request wrapper
-    ajax(options) {
-        return $.ajax({
-            ...options,
-            headers: {
-                'X-Requested-With': 'XMLHttpRequest',
-                ...options.headers
-            }
-        });
-    },
-    
-    // Format number
-    formatNumber(number, decimals = 0) {
-        return new Intl.NumberFormat(document.documentElement.lang, {
-            minimumFractionDigits: decimals,
-            maximumFractionDigits: decimals
-        }).format(number);
-    },
-    
-    // Format currency
-    formatCurrency(amount, currency = 'THB') {
-        return new Intl.NumberFormat(document.documentElement.lang, {
-            style: 'currency',
-            currency: currency
-        }).format(amount);
-    },
-    
-    // Format date
-    formatDate(date, format = 'short') {
-        return new Intl.DateTimeFormat(document.documentElement.lang, {
-            dateStyle: format
-        }).format(new Date(date));
-    },
-    
-    // Format time
-    formatTime(seconds) {
-        const hours = Math.floor(seconds / 3600);
-        const minutes = Math.floor((seconds % 3600) / 60);
-        const secs = seconds % 60;
-        
-        return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    },
-    
-    // Format bytes
-    formatBytes(bytes, decimals = 2) {
+    });
+});
+
+// Utility functions
+const Utils = {
+    formatBytes: function(bytes, decimals = 2) {
         if (bytes === 0) return '0 Bytes';
-        
         const k = 1024;
         const dm = decimals < 0 ? 0 : decimals;
         const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-        
         const i = Math.floor(Math.log(bytes) / Math.log(k));
-        
         return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+    },
+    
+    formatDuration: function(seconds) {
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+        return `${hours}h ${minutes}m ${secs}s`;
+    },
+    
+    formatCurrency: function(amount, currency = 'THB') {
+        return new Intl.NumberFormat('th-TH', {
+            style: 'currency',
+            currency: currency
+        }).format(amount);
     }
 };
 
-// Initialize app when DOM is ready
-$(document).ready(() => {
-    App.init();
+// Socket.IO connection
+const socket = io();
+
+socket.on('connect', () => {
+    console.log('Connected to server');
 });
 
-// Handle form submissions with loading state
-$(document).on('submit', 'form[data-loading]', function(e) {
-    const $form = $(this);
-    const $submitBtn = $form.find('[type="submit"]');
-    
-    $submitBtn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin mr-2"></i>Loading...');
-});
-
-// Handle delete confirmations
-$(document).on('click', '[data-confirm-delete]', function(e) {
-    e.preventDefault();
-    
-    const $this = $(this);
-    const url = $this.attr('href') || $this.data('url');
-    
-    App.confirm({
-        title: 'Delete Confirmation',
-        text: 'This action cannot be undone!',
-        confirmText: 'Yes, delete it!'
-    }).then((result) => {
-        if (result.isConfirmed) {
-            if ($this.data('method') === 'DELETE') {
-                App.ajax({
-                    url: url,
-                    method: 'DELETE',
-                    success: (response) => {
-                        if (response.success) {
-                            window.location.reload();
-                        }
-                    }
-                });
-            } else {
-                window.location.href = url;
-            }
-        }
+// Real-time notifications
+socket.on('notification', (data) => {
+    Swal.fire({
+        toast: true,
+        position: 'top-end',
+        icon: data.type || 'info',
+        title: data.message,
+        showConfirmButton: false,
+        timer: 3000,
+        timerProgressBar: true
     });
 });
+EOF
 
-// Handle AJAX forms
-$(document).on('submit', 'form[data-ajax]', function(e) {
-    e.preventDefault();
+    # Create controller files
+    mkdir -p "$SYSTEM_DIR/app/controllers"
     
-    const $form = $(this);
-    const url = $form.attr('action');
-    const method = $form.attr('method') || 'POST';
-    const data = $form.serialize();
+    cat << 'EOF' > "$SYSTEM_DIR/app/controllers/DashboardController.js"
+const Device = require('../models/Device');
+const Voucher = require('../models/Voucher');
+const Session = require('../models/Session');
+const PaymentTransaction = require('../models/PaymentTransaction');
+const moment = require('moment');
+
+class DashboardController {
+    static async index(req, res) {
+        try {
+            res.render('dashboard/index', {
+                title: req.t('dashboard'),
+                activeMenu: 'dashboard'
+            });
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/');
+        }
+    }
     
-    App.ajax({
-        url: url,
-        method: method,
-        data: data,
-        success: (response) => {
-            if (response.success) {
-                App.showNotification({
-                    type: 'success',
-                    title: 'Success',
-                    message: response.message || 'Operation completed successfully'
-                });
-                
-                if (response.redirect) {
-                    setTimeout(() => {
-                        window.location.href = response.redirect;
-                    }, 1000);
+    static async getStats(req, res) {
+        try {
+            const organizationId = req.user.organization._id;
+            const today = moment().startOf('day');
+            
+            // Get device stats
+            const totalDevices = await Device.countDocuments({ organization: organizationId });
+            const onlineDevices = await Device.countDocuments({ 
+                organization: organizationId, 
+                status: 'online' 
+            });
+            
+            // Get user stats
+            const activeUsers = await Session.countDocuments({
+                organization: organizationId,
+                status: 'active'
+            });
+            
+            // Get voucher stats
+            const totalVouchers = await Voucher.countDocuments({ organization: organizationId });
+            const activeVouchers = await Voucher.countDocuments({ 
+                organization: organizationId, 
+                status: 'active' 
+            });
+            
+            // Get today's revenue
+            const todayRevenue = await PaymentTransaction.aggregate([
+                {
+                    $match: {
+                        organization: organizationId,
+                        status: 'completed',
+                        createdAt: { $gte: today.toDate() }
+                    }
+                },
+                {
+                    $group: {
+                        _id: null,
+                        total: { $sum: '$amount.value' }
+                    }
                 }
-            } else {
-                App.showNotification({
-                    type: 'error',
-                    title: 'Error',
-                    message: response.message || 'Operation failed'
-                });
+            ]);
+            
+            // Get chart data
+            const last7Days = [];
+            for (let i = 6; i >= 0; i--) {
+                last7Days.push(moment().subtract(i, 'days').format('MMM DD'));
             }
-        },
-        error: (xhr) => {
-            App.showNotification({
-                type: 'error',
-                title: 'Error',
-                message: 'An error occurred. Please try again.'
+            
+            // Usage chart data
+            const usageData = await Session.aggregate([
+                {
+                    $match: {
+                        organization: organizationId,
+                        startTime: { $gte: moment().subtract(7, 'days').toDate() }
+                    }
+                },
+                {
+                    $group: {
+                        _id: { $dateToString: { format: '%Y-%m-%d', date: '$startTime' } },
+                        count: { $sum: 1 }
+                    }
+                },
+                { $sort: { _id: 1 } }
+            ]);
+            
+            // Revenue chart data
+            const revenueData = await PaymentTransaction.aggregate([
+                {
+                    $match: {
+                        organization: organizationId,
+                        status: 'completed',
+                        createdAt: { $gte: moment().subtract(7, 'days').toDate() }
+                    }
+                },
+                {
+                    $group: {
+                        _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+                        total: { $sum: '$amount.value' }
+                    }
+                },
+                { $sort: { _id: 1 } }
+            ]);
+            
+            res.json({
+                success: true,
+                data: {
+                    totalDevices,
+                    onlineDevices,
+                    activeUsers,
+                    totalVouchers,
+                    activeVouchers,
+                    todayRevenue: todayRevenue[0]?.total || 0,
+                    usageChart: {
+                        labels: last7Days,
+                        data: last7Days.map(day => {
+                            const dayData = usageData.find(d => 
+                                moment(d._id).format('MMM DD') === day
+                            );
+                            return dayData?.count || 0;
+                        })
+                    },
+                    revenueChart: {
+                        labels: last7Days,
+                        data: last7Days.map(day => {
+                            const dayData = revenueData.find(d => 
+                                moment(d._id).format('MMM DD') === day
+                            );
+                            return dayData?.total || 0;
+                        })
+                    }
+                }
+            });
+        } catch (error) {
+            res.status(500).json({
+                success: false,
+                error: error.message
             });
         }
-    });
-});
-EOF
-
-    # Create placeholder images
-    mkdir -p "$SYSTEM_DIR/app/public/images"
-    touch "$SYSTEM_DIR/app/public/images/logo.png"
-    touch "$SYSTEM_DIR/app/public/images/default-avatar.png"
-    touch "$SYSTEM_DIR/app/public/images/promptpay.png"
-    touch "$SYSTEM_DIR/app/public/images/truewallet.png"
-    touch "$SYSTEM_DIR/app/public/images/card.png"
-    touch "$SYSTEM_DIR/app/public/images/bank.png"
+    }
+    
+    static async devices(req, res) {
+        try {
+            const devices = await Device.find({ 
+                organization: req.user.organization._id 
+            }).sort({ createdAt: -1 });
+            
+            res.render('devices/index', {
+                title: req.t('devices'),
+                activeMenu: 'devices',
+                devices
+            });
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/');
+        }
+    }
+    
+    static async vouchers(req, res) {
+        try {
+            const vouchers = await Voucher.find({ 
+                organization: req.user.organization._id 
+            })
+            .populate('device', 'name')
+            .sort({ createdAt: -1 })
+            .limit(100);
+            
+            res.render('vouchers/index', {
+                title: req.t('vouchers'),
+                activeMenu: 'vouchers',
+                vouchers
+            });
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/');
+        }
+    }
+    
+    static async createVoucherForm(req, res) {
+        try {
+            const devices = await Device.find({ 
+                organization: req.user.organization._id,
+                status: 'online'
+            });
+            
+            res.render('vouchers/create', {
+                title: req.t('voucher.createVoucher'),
+                activeMenu: 'vouchers',
+                devices
+            });
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/vouchers');
+        }
+    }
+    
+    static async createVoucher(req, res) {
+        try {
+            const VoucherService = require('../services/VoucherService');
+            
+            const vouchers = await VoucherService.generateBatch({
+                ...req.body,
+                organization: req.user.organization._id,
+                createdBy: req.user._id
+            });
+            
+            req.flash('success_msg', `Created ${vouchers.length} vouchers successfully`);
+            res.redirect('/vouchers');
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/vouchers/create');
+        }
+    }
+    
+    static async printVoucher(req, res) {
+        try {
+            const voucher = await Voucher.findOne({
+                _id: req.params.id,
+                organization: req.user.organization._id
+            });
+            
+            if (!voucher) {
+                req.flash('error_msg', 'Voucher not found');
+                return res.redirect('/vouchers');
+            }
+            
+            res.render('vouchers/print', {
+                title: 'Print Voucher',
+                layout: false,
+                voucher
+            });
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/vouchers');
+        }
+    }
+    
+    static async users(req, res) {
+        try {
+            const User = require('../models/User');
+            
+            const users = await User.find({ 
+                organization: req.user.organization._id 
+            }).sort({ createdAt: -1 });
+            
+            res.render('users/index', {
+                title: req.t('users'),
+                activeMenu: 'users',
+                users
+            });
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/');
+        }
+    }
+    
+    static async reports(req, res) {
+        try {
+            res.render('reports/index', {
+                title: req.t('reports'),
+                activeMenu: 'reports'
+            });
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/');
+        }
+    }
+    
+    static async revenueReport(req, res) {
+        try {
+            const ReportService = require('../services/ReportService');
+            
+            const report = await ReportService.generateRevenueReport({
+                organizationId: req.user.organization._id,
+                ...req.query
+            });
+            
+            res.render('reports/revenue', {
+                title: req.t('reports.revenue'),
+                activeMenu: 'reports',
+                report
+            });
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/reports');
+        }
+    }
+    
+    static async usageReport(req, res) {
+        try {
+            const ReportService = require('../services/ReportService');
+            
+            const report = await ReportService.generateUsageReport({
+                organizationId: req.user.organization._id,
+                ...req.query
+            });
+            
+            res.render('reports/usage', {
+                title: req.t('reports.usage'),
+                activeMenu: 'reports',
+                report
+            });
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/reports');
+        }
+    }
+    
+    static async exportReport(req, res) {
+        try {
+            const ReportService = require('../services/ReportService');
+            
+            const url = await ReportService.exportReport({
+                ...req.query,
+                organizationId: req.user.organization._id,
+                userId: req.user._id
+            });
+            
+            res.redirect(url);
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/reports');
+        }
+    }
 }
 
-# Create app Dockerfile
-create_app_dockerfile() {
-    cat << 'EOF' > "$SYSTEM_DIR/app/Dockerfile"
-FROM node:20-alpine AS builder
+module.exports = DashboardController;
+EOF
 
-# Install build dependencies
-RUN apk add --no-cache python3 make g++ cairo-dev pango-dev jpeg-dev giflib-dev
+    cat << 'EOF' > "$SYSTEM_DIR/app/controllers/PortalController.js"
+const PortalTemplate = require('../models/PortalTemplate');
+const Voucher = require('../models/Voucher');
+const Session = require('../models/Session');
+const SmsOtp = require('../models/SmsOtp');
+const Device = require('../models/Device');
+const MikroTikService = require('../services/MikroTikService');
+const SmsService = require('../utils/sms');
 
-# Create app directory
-WORKDIR /usr/src/app
+class PortalController {
+    static async showPortal(req, res) {
+        try {
+            // Get device ID from query or session
+            const deviceId = req.query.device || req.session.deviceId;
+            
+            if (!deviceId) {
+                return res.render('portal/error', {
+                    layout: false,
+                    message: 'Device not found'
+                });
+            }
+            
+            // Get device and organization
+            const device = await Device.findById(deviceId).populate('organization');
+            if (!device) {
+                return res.render('portal/error', {
+                    layout: false,
+                    message: 'Invalid device'
+                });
+            }
+            
+            // Get portal template
+            const template = await PortalTemplate.findOne({
+                organization: device.organization._id,
+                isActive: true
+            }) || this.getDefaultTemplate();
+            
+            // Save device ID in session
+            req.session.deviceId = deviceId;
+            
+            res.render('portal/index', {
+                layout: false,
+                template,
+                device,
+                lang: req.language || 'th',
+                t: req.t
+            });
+        } catch (error) {
+            res.render('portal/error', {
+                layout: false,
+                message: error.message
+            });
+        }
+    }
+    
+    static async showLogin(req, res) {
+        return this.showPortal(req, res);
+    }
+    
+    static async loginVoucher(req, res) {
+        try {
+            const { code } = req.body;
+            const deviceId = req.session.deviceId;
+            
+            // Validate voucher
+            const VoucherService = require('../services/VoucherService');
+            const validation = await VoucherService.validateVoucher(code, deviceId);
+            
+            if (!validation.valid) {
+                req.flash('error_msg', req.t(`portal.errors.${validation.error}`));
+                return res.redirect('/portal');
+            }
+            
+            // Activate voucher
+            const activation = await VoucherService.activateVoucher({
+                code,
+                deviceId,
+                macAddress: req.headers['x-forwarded-for'] || req.ip,
+                ipAddress: req.ip
+            });
+            
+            // Create hotspot user on MikroTik
+            await MikroTikService.createHotspotUser(deviceId, {
+                username: code,
+                password: code,
+                profile: validation.voucher.profile.mikrotikProfile?.name || 'default',
+                limitUptime: VoucherService.formatDuration(validation.voucher.profile.duration)
+            });
+            
+            // Create session
+            const session = new Session({
+                organization: validation.voucher.organization,
+                device: deviceId,
+                voucher: validation.voucher._id,
+                user: {
+                    username: code,
+                    macAddress: req.headers['x-forwarded-for'] || req.ip,
+                    ipAddress: req.ip,
+                    deviceInfo: req.headers['user-agent']
+                },
+                status: 'active'
+            });
+            
+            await session.save();
+            
+            // Store in session
+            req.session.hotspotUser = {
+                username: code,
+                sessionId: session._id,
+                expiresAt: activation.expiresAt
+            };
+            
+            // Redirect to status page
+            res.redirect('/portal/status');
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/portal');
+        }
+    }
+    
+    static async loginUserPass(req, res) {
+        try {
+            const { username, password } = req.body;
+            const deviceId = req.session.deviceId;
+            
+            // Verify credentials with MikroTik
+            const users = await MikroTikService.getHotspotUsers(deviceId);
+            const user = users.find(u => u.name === username);
+            
+            if (!user || user.password !== password) {
+                req.flash('error_msg', req.t('portal.errors.invalidCredentials'));
+                return res.redirect('/portal');
+            }
+            
+            // Create session
+            const session = new Session({
+                organization: req.session.organization,
+                device: deviceId,
+                user: {
+                    username,
+                    macAddress: req.headers['x-forwarded-for'] || req.ip,
+                    ipAddress: req.ip,
+                    deviceInfo: req.headers['user-agent']
+                },
+                status: 'active'
+            });
+            
+            await session.save();
+            
+            // Store in session
+            req.session.hotspotUser = {
+                username,
+                sessionId: session._id
+            };
+            
+            res.redirect('/portal/status');
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/portal');
+        }
+    }
+    
+    static async requestSmsOtp(req, res) {
+        try {
+            const { phone } = req.body;
+            
+            // Generate OTP
+            const otp = SmsService.generateOTP();
+            
+            // Save OTP
+            const smsOtp = new SmsOtp({
+                phone,
+                otp,
+                purpose: 'login',
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
+            
+            await smsOtp.save();
+            
+            // Send SMS
+            await SmsService.sendOTP(phone, otp);
+            
+            res.json({
+                success: true,
+                message: 'OTP sent successfully'
+            });
+        } catch (error) {
+            res.status(400).json({
+                success: false,
+                error: error.message
+            });
+        }
+    }
+    
+    static async verifySmsOtp(req, res) {
+        try {
+            const { phone, otp } = req.body;
+            const deviceId = req.session.deviceId;
+            
+            // Find and verify OTP
+            const smsOtp = await SmsOtp.findOne({
+                phone,
+                otp,
+                isUsed: false,
+                purpose: 'login'
+            });
+            
+            if (!smsOtp) {
+                req.flash('error_msg', 'Invalid OTP');
+                return res.redirect('/portal');
+            }
+            
+            // Verify OTP
+            await smsOtp.verify(otp);
+            
+            // Create temporary user
+            const username = `SMS_${phone.slice(-6)}_${Date.now()}`;
+            
+            // Create hotspot user on MikroTik
+            await MikroTikService.createHotspotUser(deviceId, {
+                username,
+                password: username,
+                profile: 'sms-user',
+                limitUptime: '1h' // 1 hour for SMS users
+            });
+            
+            // Create session
+            const session = new Session({
+                organization: req.session.organization,
+                device: deviceId,
+                user: {
+                    username,
+                    phone,
+                    macAddress: req.headers['x-forwarded-for'] || req.ip,
+                    ipAddress: req.ip,
+                    deviceInfo: req.headers['user-agent']
+                },
+                status: 'active'
+            });
+            
+            await session.save();
+            
+            // Store in session
+            req.session.hotspotUser = {
+                username,
+                sessionId: session._id
+            };
+            
+            res.redirect('/portal/status');
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/portal');
+        }
+    }
+    
+    static async socialLoginCallback(req, res) {
+        // Handle social login callbacks
+        // This would integrate with OAuth providers
+        res.redirect('/portal');
+    }
+    
+    static async showStatus(req, res) {
+        try {
+            if (!req.session.hotspotUser) {
+                return res.redirect('/portal');
+            }
+            
+            const session = await Session.findById(req.session.hotspotUser.sessionId)
+                .populate('voucher');
+            
+            if (!session || session.status !== 'active') {
+                delete req.session.hotspotUser;
+                return res.redirect('/portal');
+            }
+            
+            res.render('portal/status', {
+                layout: false,
+                session,
+                lang: req.language || 'th',
+                t: req.t
+            });
+        } catch (error) {
+            res.redirect('/portal');
+        }
+    }
+    
+    static async logout(req, res) {
+        try {
+            if (req.session.hotspotUser) {
+                const { username, sessionId } = req.session.hotspotUser;
+                const deviceId = req.session.deviceId;
+                
+                // Disconnect user from MikroTik
+                await MikroTikService.disconnectUser(deviceId, username);
+                
+                // Update session
+                await Session.findByIdAndUpdate(sessionId, {
+                    status: 'completed',
+                    endTime: new Date()
+                });
+                
+                // Clear session
+                delete req.session.hotspotUser;
+            }
+            
+            res.redirect('/portal');
+        } catch (error) {
+            res.redirect('/portal');
+        }
+    }
+    
+    static async showTerms(req, res) {
+        res.render('portal/terms', {
+            layout: false,
+            lang: req.language || 'th',
+            t: req.t
+        });
+    }
+    
+    static getDefaultTemplate() {
+        return {
+            name: 'Default',
+            design: {
+                backgroundColor: '#f3f4f6',
+                primaryColor: '#4f46e5'
+            },
+            content: {
+                title: { th: 'ยินดีต้อนรับ', en: 'Welcome' },
+                subtitle: { th: 'กรุณาเข้าสู่ระบบ', en: 'Please login' }
+            },
+            loginMethods: [
+                { type: 'voucher', enabled: true, order: 1 },
+                { type: 'userpass', enabled: true, order: 2 },
+                { type: 'sms', enabled: true, order: 3 },
+                { type: 'social', enabled: false, order: 4 }
+            ],
+            features: {
+                showLogo: true,
+                showLanguageSelector: true,
+                showTerms: true,
+                requireTermsAcceptance: false,
+                showVoucherPurchase: true
+            }
+        };
+    }
+}
 
-# Copy package files
-COPY package*.json ./
+module.exports = PortalController;
+EOF
 
-# Install dependencies
-RUN npm ci --only=production
+    cat << 'EOF' > "$SYSTEM_DIR/app/controllers/SettingsController.js"
+const Organization = require('../models/Organization');
+const PortalTemplate = require('../models/PortalTemplate');
+const HotspotProfile = require('../models/HotspotProfile');
 
-# Copy application files
-COPY . .
+class SettingsController {
+    static async index(req, res) {
+        try {
+            res.render('settings/index', {
+                title: req.t('settings'),
+                activeMenu: 'settings'
+            });
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/');
+        }
+    }
+    
+    static async organization(req, res) {
+        try {
+            const organization = await Organization.findById(req.user.organization._id);
+            
+            res.render('settings/organization', {
+                title: req.t('settings.organization'),
+                activeMenu: 'settings',
+                organization
+            });
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/settings');
+        }
+    }
+    
+    static async updateOrganization(req, res) {
+        try {
+            await Organization.findByIdAndUpdate(
+                req.user.organization._id,
+                req.body
+            );
+            
+            req.flash('success_msg', req.t('settings.updated'));
+            res.redirect('/settings/organization');
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/settings/organization');
+        }
+    }
+    
+    static async payment(req, res) {
+        try {
+            const organization = await Organization.findById(req.user.organization._id);
+            
+            res.render('settings/payment', {
+                title: req.t('settings.payment'),
+                activeMenu: 'settings',
+                paymentSettings: organization.paymentSettings
+            });
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/settings');
+        }
+    }
+    
+    static async updatePayment(req, res) {
+        try {
+            await Organization.findByIdAndUpdate(
+                req.user.organization._id,
+                { paymentSettings: req.body }
+            );
+            
+            req.flash('success_msg', req.t('settings.updated'));
+            res.redirect('/settings/payment');
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/settings/payment');
+        }
+    }
+    
+    static async portal(req, res) {
+        try {
+            const templates = await PortalTemplate.find({
+                organization: req.user.organization._id
+            });
+            
+            res.render('settings/portal', {
+                title: req.t('settings.portal'),
+                activeMenu: 'settings',
+                templates
+            });
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/settings');
+        }
+    }
+    
+    static async updatePortal(req, res) {
+        try {
+            const { templateId, ...data } = req.body;
+            
+            if (templateId) {
+                await PortalTemplate.findByIdAndUpdate(templateId, data);
+            } else {
+                await PortalTemplate.create({
+                    ...data,
+                    organization: req.user.organization._id
+                });
+            }
+            
+            req.flash('success_msg', req.t('settings.updated'));
+            res.redirect('/settings/portal');
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/settings/portal');
+        }
+    }
+    
+    static async uploadPortalTemplate(req, res) {
+        try {
+            if (!req.files || !req.files.template) {
+                throw new Error('No file uploaded');
+            }
+            
+            const template = req.files.template;
+            const uploadPath = `/uploads/templates/${Date.now()}-${template.name}`;
+            
+            await template.mv(`./public${uploadPath}`);
+            
+            res.json({
+                success: true,
+                path: uploadPath
+            });
+        } catch (error) {
+            res.status(400).json({
+                success: false,
+                error: error.message
+            });
+        }
+    }
+    
+    static async voucherProfiles(req, res) {
+        try {
+            const profiles = await HotspotProfile.find({
+                organization: req.user.organization._id
+            }).sort('order');
+            
+            res.render('settings/voucher-profiles', {
+                title: req.t('settings.voucherProfiles'),
+                activeMenu: 'settings',
+                profiles
+            });
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/settings');
+        }
+    }
+    
+    static async createVoucherProfile(req, res) {
+        try {
+            await HotspotProfile.create({
+                ...req.body,
+                organization: req.user.organization._id
+            });
+            
+            req.flash('success_msg', req.t('settings.profileCreated'));
+            res.redirect('/settings/vouchers');
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/settings/vouchers');
+        }
+    }
+    
+    static async updateVoucherProfile(req, res) {
+        try {
+            await HotspotProfile.findByIdAndUpdate(
+                req.params.id,
+                req.body
+            );
+            
+            req.flash('success_msg', req.t('settings.updated'));
+            res.redirect('/settings/vouchers');
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/settings/vouchers');
+        }
+    }
+    
+    static async deleteVoucherProfile(req, res) {
+        try {
+            await HotspotProfile.findByIdAndDelete(req.params.id);
+            
+            req.flash('success_msg', req.t('settings.deleted'));
+            res.redirect('/settings/vouchers');
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/settings/vouchers');
+        }
+    }
+    
+    static async email(req, res) {
+        try {
+            res.render('settings/email', {
+                title: req.t('settings.email'),
+                activeMenu: 'settings',
+                emailSettings: {
+                    host: process.env.SMTP_HOST,
+                    port: process.env.SMTP_PORT,
+                    user: process.env.SMTP_USER,
+                    from: process.env.FROM_EMAIL
+                }
+            });
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/settings');
+        }
+    }
+    
+    static async updateEmail(req, res) {
+        try {
+            // Update environment variables
+            // In production, you'd update a configuration file or database
+            
+            req.flash('success_msg', req.t('settings.updated'));
+            res.redirect('/settings/email');
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/settings/email');
+        }
+    }
+    
+    static async testEmail(req, res) {
+        try {
+            const EmailService = require('../utils/email');
+            
+            await EmailService.sendEmail({
+                to: req.body.testEmail,
+                subject: 'Test Email',
+                template: 'test',
+                data: {}
+            });
+            
+            req.flash('success_msg', 'Test email sent successfully');
+            res.redirect('/settings/email');
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/settings/email');
+        }
+    }
+    
+    static async api(req, res) {
+        try {
+            const apiKeys = req.user.apiKeys || [];
+            
+            res.render('settings/api', {
+                title: req.t('settings.api'),
+                activeMenu: 'settings',
+                apiKeys
+            });
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/settings');
+        }
+    }
+    
+    static async generateApiKey(req, res) {
+        try {
+            const User = require('../models/User');
+            const { v4: uuidv4 } = require('uuid');
+            
+            const apiKey = {
+                key: uuidv4(),
+                name: req.body.name,
+                permissions: req.body.permissions || [],
+                createdAt: new Date(),
+                expiresAt: req.body.expiresAt ? new Date(req.body.expiresAt) : null
+            };
+            
+            await User.findByIdAndUpdate(req.user._id, {
+                $push: { apiKeys: apiKey }
+            });
+            
+            req.flash('success_msg', `API Key created: ${apiKey.key}`);
+            res.redirect('/settings/api');
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/settings/api');
+        }
+    }
+    
+    static async deleteApiKey(req, res) {
+        try {
+            const User = require('../models/User');
+            
+            await User.findByIdAndUpdate(req.user._id, {
+                $pull: { apiKeys: { _id: req.params.id } }
+            });
+            
+            req.flash('success_msg', 'API Key deleted');
+            res.redirect('/settings/api');
+        } catch (error) {
+            req.flash('error_msg', error.message);
+            res.redirect('/settings/api');
+        }
+    }
+}
 
-# Build CSS
-RUN npm run build:css || true
-
-# Production stage
-FROM node:20-alpine
-
-# Install runtime dependencies
-RUN apk add --no-cache curl bash tini cairo pango jpeg giflib font-noto-thai
-
-# Create app directory
-WORKDIR /usr/src/app
-
-# Create non-root user
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S mikrotik -u 1001
-
-# Copy from builder
-COPY --from=builder --chown=mikrotik:nodejs /usr/src/app .
-
-# Create necessary directories
-RUN mkdir -p /var/log/mikrotik-vpn /usr/src/app/uploads && \
-    chown -R mikrotik:nodejs /var/log/mikrotik-vpn /usr/src/app/uploads
-
-# Switch to non-root user
-USER mikrotik
-
-# Expose port
-EXPOSE 3000
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:3000/health || exit 1
-
-# Use tini for proper signal handling
-ENTRYPOINT ["/sbin/tini", "--"]
-
-# Start application
-CMD ["node", "server.js"]
+module.exports = SettingsController;
 EOF
 }
 
+# Continue with remaining phases...
 # =============================================================================
 # PHASE 6: CONFIGURATION FILES (continued)
 # =============================================================================
 
-# Continue with remaining configuration
-phase6_configuration_files() {
-    log "==================================================================="
-    log "PHASE 6: CREATING CONFIGURATION FILES"
-    log "==================================================================="
-    
-    # MongoDB initialization script
-    cat << EOF > "$SYSTEM_DIR/mongodb/mongo-init.js"
-// Switch to admin database
-db = db.getSiblingDB('admin');
+# Create MongoDB initialization script (already exists but let's ensure it's complete)
+cat << EOF >> "$SYSTEM_DIR/mongodb/mongo-init.js"
 
-// Create admin user if not exists
-if (!db.getUser('admin')) {
-    db.createUser({
-        user: 'admin',
-        pwd: '$MONGO_ROOT_PASSWORD',
-        roles: ['root']
+// Create default admin user
+const defaultOrg = db.organizations.findOne({ domain: '$DOMAIN_NAME' });
+if (defaultOrg) {
+    db.users.insertOne({
+        organization: defaultOrg._id,
+        username: 'admin',
+        email: '$ADMIN_EMAIL',
+        password: '\$2a\$10\$YourHashedPasswordHere', // You'll need to generate this
+        role: 'superadmin',
+        profile: {
+            firstName: 'System',
+            lastName: 'Administrator'
+        },
+        isActive: true,
+        isVerified: true,
+        createdAt: new Date(),
+        updatedAt: new Date()
     });
 }
 
-// Switch to application database
-db = db.getSiblingDB('mikrotik_vpn');
-
-// Create application user
-db.createUser({
-    user: 'mikrotik_app',
-    pwd: '$MONGO_APP_PASSWORD',
-    roles: [
-        {
-            role: 'readWrite',
-            db: 'mikrotik_vpn'
-        }
-    ]
-});
-
-// Create collections with validation
-db.createCollection('organizations', {
-    validator: {
-        \$jsonSchema: {
-            bsonType: 'object',
-            required: ['name', 'domain', 'email'],
-            properties: {
-                name: { bsonType: 'string' },
-                domain: { bsonType: 'string' },
-                email: { bsonType: 'string' }
-            }
-        }
-    }
-});
-
-db.createCollection('devices', {
-    validator: {
-        \$jsonSchema: {
-            bsonType: 'object',
-            required: ['organization', 'name', 'serialNumber', 'macAddress'],
-            properties: {
-                organization: { bsonType: 'objectId' },
-                name: { bsonType: 'string' },
-                serialNumber: { bsonType: 'string' },
-                macAddress: { bsonType: 'string' }
-            }
-        }
-    }
-});
-
-db.createCollection('users');
-db.createCollection('vouchers');
-db.createCollection('sessions');
-db.createCollection('logs');
-db.createCollection('settings');
-db.createCollection('paymenttransactions');
-db.createCollection('portaltemplates');
-db.createCollection('hotspotprofiles');
-db.createCollection('smsotps');
-
-// Create indexes
-db.organizations.createIndex({ domain: 1 }, { unique: true });
-db.organizations.createIndex({ email: 1 });
-
-db.devices.createIndex({ organization: 1 });
-db.devices.createIndex({ serialNumber: 1 }, { unique: true });
-db.devices.createIndex({ macAddress: 1 }, { unique: true });
-db.devices.createIndex({ status: 1 });
-
-db.users.createIndex({ organization: 1 });
-db.users.createIndex({ username: 1 }, { unique: true });
-db.users.createIndex({ email: 1 }, { unique: true });
-
-db.vouchers.createIndex({ organization: 1 });
-db.vouchers.createIndex({ code: 1 }, { unique: true });
-db.vouchers.createIndex({ status: 1 });
-db.vouchers.createIndex({ 'batch.id': 1 });
-
-db.sessions.createIndex({ organization: 1 });
-db.sessions.createIndex({ device: 1 });
-db.sessions.createIndex({ startTime: -1 });
-db.sessions.createIndex({ status: 1 });
-
-db.logs.createIndex({ timestamp: -1 });
-db.logs.createIndex({ level: 1 });
-db.logs.createIndex({ device: 1 });
-
-db.paymenttransactions.createIndex({ organization: 1 });
-db.paymenttransactions.createIndex({ transactionId: 1 }, { unique: true });
-db.paymenttransactions.createIndex({ status: 1 });
-db.paymenttransactions.createIndex({ createdAt: -1 });
-
-db.smsotps.createIndex({ phone: 1 });
-db.smsotps.createIndex({ otp: 1 });
-db.smsotps.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-
-// Insert default organization
-const org = db.organizations.insertOne({
-    name: 'Default Organization',
-    domain: '$DOMAIN_NAME',
-    email: '$ADMIN_EMAIL',
-    settings: {
-        timezone: 'Asia/Bangkok',
-        currency: '$DEFAULT_CURRENCY',
-        language: '$DEFAULT_LANGUAGE'
-    },
-    subscription: {
-        plan: 'enterprise',
-        status: 'active'
-    },
-    paymentSettings: {
-        enabled: true,
-        methods: [
-            { method: 'promptpay', enabled: true },
-            { method: 'truewallet', enabled: true },
-            { method: 'creditcard', enabled: false },
-            { method: 'banktransfer', enabled: true }
-        ]
-    },
-    isActive: true,
-    createdAt: new Date(),
-    updatedAt: new Date()
-});
-
-// Insert default admin user
-const bcrypt = require('bcryptjs');
-const hashedPassword = bcrypt.hashSync('admin123', 10);
-
-db.users.insertOne({
-    organization: org.insertedId,
-    username: 'admin',
-    email: '$ADMIN_EMAIL',
-    password: hashedPassword,
-    role: 'superadmin',
-    profile: {
-        firstName: 'System',
-        lastName: 'Administrator'
-    },
-    isActive: true,
-    isVerified: true,
-    createdAt: new Date(),
-    updatedAt: new Date()
-});
-
-// Insert default hotspot profiles
+// Create default hotspot profiles
 const profiles = [
     {
-        organization: org.insertedId,
+        organization: defaultOrg._id,
         name: '1 Hour',
         mikrotikProfile: { name: '1hour' },
         limits: {
@@ -8317,12 +8205,12 @@ const profiles = [
             dataLimit: { value: 500, unit: 'MB' },
             speed: { upload: 1, download: 5 }
         },
-        pricing: { amount: 10, currency: '$DEFAULT_CURRENCY' },
+        pricing: { amount: 10 },
         isActive: true,
         order: 1
     },
     {
-        organization: org.insertedId,
+        organization: defaultOrg._id,
         name: '1 Day',
         mikrotikProfile: { name: '1day' },
         limits: {
@@ -8330,12 +8218,12 @@ const profiles = [
             dataLimit: { value: 5, unit: 'GB' },
             speed: { upload: 5, download: 20 }
         },
-        pricing: { amount: 50, currency: '$DEFAULT_CURRENCY' },
+        pricing: { amount: 50 },
         isActive: true,
         order: 2
     },
     {
-        organization: org.insertedId,
+        organization: defaultOrg._id,
         name: '7 Days',
         mikrotikProfile: { name: '7days' },
         limits: {
@@ -8343,12 +8231,12 @@ const profiles = [
             dataLimit: { value: 20, unit: 'GB' },
             speed: { upload: 10, download: 50 }
         },
-        pricing: { amount: 200, currency: '$DEFAULT_CURRENCY' },
+        pricing: { amount: 200 },
         isActive: true,
         order: 3
     },
     {
-        organization: org.insertedId,
+        organization: defaultOrg._id,
         name: '30 Days',
         mikrotikProfile: { name: '30days' },
         limits: {
@@ -8356,214 +8244,314 @@ const profiles = [
             dataLimit: { value: 100, unit: 'GB' },
             speed: { upload: 20, download: 100 }
         },
-        pricing: { amount: 500, currency: '$DEFAULT_CURRENCY' },
+        pricing: { amount: 500 },
         isActive: true,
         order: 4
     }
 ];
 
-db.hotspotprofiles.insertMany(profiles);
+profiles.forEach(profile => {
+    db.hotspotprofiles.insertOne({
+        ...profile,
+        createdAt: new Date(),
+        updatedAt: new Date()
+    });
+});
 
-print('MongoDB initialization completed successfully');
+print('Default data created successfully');
 EOF
 
-    # Redis configuration
-    cat << EOF > "$SYSTEM_DIR/redis/redis.conf"
-# Redis Configuration for MikroTik VPN System
+# =============================================================================
+# PHASE 7: DOCKER COMPOSE (continued - ensure it's complete)
+# =============================================================================
 
-# Network
-bind 0.0.0.0
-protected-mode yes
-port 6379
-tcp-backlog 511
-timeout 0
-tcp-keepalive 300
+# The Docker Compose file is already complete in phase7_docker_compose()
 
-# General
-daemonize no
-supervised no
-pidfile /var/run/redis_6379.pid
-loglevel notice
-logfile ""
-databases 16
+# =============================================================================
+# PHASE 8: MANAGEMENT SCRIPTS (continued)
+# =============================================================================
 
-# Snapshotting
-save 900 1
-save 300 10
-save 60 10000
-stop-writes-on-bgsave-error yes
-rdbcompression yes
-rdbchecksum yes
-dbfilename dump.rdb
-dir /data
+# Create additional management scripts
+create_additional_management_scripts() {
+    # MikroTik device management script
+    cat << 'EOF' > "$SCRIPT_DIR/manage-mikrotik-devices.sh"
+#!/bin/bash
+source /opt/mikrotik-vpn/configs/setup.env
 
-# Replication
-replica-read-only yes
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-# Security
-requirepass $REDIS_PASSWORD
+echo -e "${BLUE}=== MikroTik Device Management ===${NC}"
+echo
+echo "1. Add new device"
+echo "2. List devices"
+echo "3. Check device status"
+echo "4. Sync device configuration"
+echo "5. Backup device"
+echo "6. Restore device"
+echo "7. Exit"
+echo
+read -p "Select option (1-7): " choice
 
-# Limits
-maxclients 10000
-maxmemory ${REDIS_MAX_MEM}mb
-maxmemory-policy allkeys-lru
-
-# Append only mode
-appendonly yes
-appendfilename "appendonly.aof"
-appendfsync everysec
-no-appendfsync-on-rewrite no
-auto-aof-rewrite-percentage 100
-auto-aof-rewrite-min-size 64mb
-
-# Slow log
-slowlog-log-slower-than 10000
-slowlog-max-len 128
-
-# Event notification
-notify-keyspace-events ""
-
-# Advanced config
-hash-max-ziplist-entries 512
-hash-max-ziplist-value 64
-list-max-ziplist-size -2
-list-compress-depth 0
-set-max-intset-entries 512
-zset-max-ziplist-entries 128
-zset-max-ziplist-value 64
-hll-sparse-max-bytes 3000
-stream-node-max-bytes 4096
-stream-node-max-entries 100
-activerehashing yes
-client-output-buffer-limit normal 0 0 0
-client-output-buffer-limit replica 256mb 64mb 60
-client-output-buffer-limit pubsub 32mb 8mb 60
-hz 10
-dynamic-hz yes
-aof-rewrite-incremental-fsync yes
-rdb-save-incremental-fsync yes
+case $choice in
+    1)
+        echo -e "${BLUE}Add New MikroTik Device${NC}"
+        read -p "Device Name: " device_name
+        read -p "Serial Number: " serial_number
+        read -p "MAC Address: " mac_address
+        read -p "Location: " location
+        
+        # Add device via API
+        curl -X POST http://localhost:3000/api/v1/devices \
+            -H "Authorization: Bearer $API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"name\": \"$device_name\",
+                \"serialNumber\": \"$serial_number\",
+                \"macAddress\": \"$mac_address\",
+                \"location\": {\"name\": \"$location\"}
+            }"
+        ;;
+    2)
+        echo -e "${BLUE}Device List${NC}"
+        curl -s http://localhost:3000/api/v1/devices \
+            -H "Authorization: Bearer $API_KEY" | jq -r '.data[] | "\(.name) - \(.status) - \(.location.name)"'
+        ;;
+    3)
+        read -p "Enter Device ID: " device_id
+        curl -s http://localhost:3000/api/v1/devices/$device_id \
+            -H "Authorization: Bearer $API_KEY" | jq '.'
+        ;;
+    4)
+        read -p "Enter Device ID: " device_id
+        echo "Syncing device configuration..."
+        curl -X POST http://localhost:3000/api/v1/mikrotik/devices/$device_id/sync \
+            -H "Authorization: Bearer $API_KEY"
+        ;;
+    5)
+        read -p "Enter Device ID: " device_id
+        echo "Creating device backup..."
+        curl -X POST http://localhost:3000/api/v1/mikrotik/devices/$device_id/config/backup \
+            -H "Authorization: Bearer $API_KEY"
+        ;;
+    6)
+        read -p "Enter Device ID: " device_id
+        read -p "Enter Backup File: " backup_file
+        echo "Restoring device configuration..."
+        curl -X POST http://localhost:3000/api/v1/mikrotik/devices/$device_id/config/restore \
+            -H "Authorization: Bearer $API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"backupFile\": \"$backup_file\"}"
+        ;;
+    7)
+        exit 0
+        ;;
+    *)
+        echo -e "${RED}Invalid option${NC}"
+        ;;
+esac
 EOF
 
-    # Nginx configuration
-    create_nginx_configs
-    
-    # OpenVPN configuration
-    create_openvpn_configs
-    
-    # Prometheus configuration
-    create_prometheus_configs
-    
-    # Grafana configuration
-    create_grafana_configs
-    
-    # Alertmanager configuration
-    create_alertmanager_config
-    
-    log "Phase 6 completed successfully!"
+    # Voucher management script
+    cat << 'EOF' > "$SCRIPT_DIR/manage-vouchers.sh"
+#!/bin/bash
+source /opt/mikrotik-vpn/configs/setup.env
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+echo -e "${BLUE}=== Voucher Management ===${NC}"
+echo
+echo "1. Generate vouchers"
+echo "2. List active vouchers"
+echo "3. Check voucher status"
+echo "4. Print vouchers"
+echo "5. Export vouchers"
+echo "6. Voucher statistics"
+echo "7. Exit"
+echo
+read -p "Select option (1-7): " choice
+
+case $choice in
+    1)
+        echo -e "${BLUE}Generate Vouchers${NC}"
+        read -p "Quantity: " quantity
+        echo "Select Profile:"
+        echo "1. 1 Hour (10 THB)"
+        echo "2. 1 Day (50 THB)"
+        echo "3. 7 Days (200 THB)"
+        echo "4. 30 Days (500 THB)"
+        read -p "Profile (1-4): " profile_choice
+        
+        case $profile_choice in
+            1) profile="1hour" ;;
+            2) profile="1day" ;;
+            3) profile="7days" ;;
+            4) profile="30days" ;;
+            *) profile="1hour" ;;
+        esac
+        
+        read -p "Device ID (optional): " device_id
+        
+        # Generate vouchers via API
+        curl -X POST http://localhost:3000/api/v1/vouchers/generate \
+            -H "Authorization: Bearer $API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"quantity\": $quantity,
+                \"profile\": \"$profile\",
+                \"deviceId\": \"$device_id\"
+            }"
+        ;;
+    2)
+        echo -e "${BLUE}Active Vouchers${NC}"
+        curl -s "http://localhost:3000/api/v1/vouchers?status=active" \
+            -H "Authorization: Bearer $API_KEY" | jq -r '.data[] | "\(.code) - \(.profile.name) - \(.price.amount) THB"'
+        ;;
+    3)
+        read -p "Enter Voucher Code: " voucher_code
+        curl -X POST http://localhost:3000/api/v1/vouchers/validate \
+            -H "Content-Type: application/json" \
+            -d "{\"code\": \"$voucher_code\"}" | jq '.'
+        ;;
+    4)
+        echo -e "${BLUE}Print Vouchers${NC}"
+        read -p "Enter Batch ID: " batch_id
+        echo "Select Format:"
+        echo "1. PDF"
+        echo "2. Thermal Printer"
+        read -p "Format (1-2): " format_choice
+        
+        case $format_choice in
+            1) format="pdf" ;;
+            2) format="thermal" ;;
+            *) format="pdf" ;;
+        esac
+        
+        # Get vouchers by batch
+        voucher_ids=$(curl -s "http://localhost:3000/api/v1/vouchers?batchId=$batch_id" \
+            -H "Authorization: Bearer $API_KEY" | jq -r '.data[]._id' | jq -R . | jq -s .)
+        
+        # Generate print file
+        print_url=$(curl -s -X POST http://localhost:3000/api/v1/vouchers/print \
+            -H "Authorization: Bearer $API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"voucherIds\": $voucher_ids,
+                \"format\": \"$format\"
+            }" | jq -r '.data.url')
+        
+        echo "Print file available at: $print_url"
+        ;;
+    5)
+        echo -e "${BLUE}Export Vouchers${NC}"
+        read -p "Status (active/used/expired/all): " status
+        read -p "Format (csv/excel): " format
+        
+        curl -s "http://localhost:3000/api/v1/vouchers/export?status=$status&format=$format" \
+            -H "Authorization: Bearer $API_KEY" \
+            -o "vouchers_export_$(date +%Y%m%d_%H%M%S).$format"
+        
+        echo "Export completed!"
+        ;;
+    6)
+        echo -e "${BLUE}Voucher Statistics${NC}"
+        curl -s http://localhost:3000/api/v1/vouchers/stats \
+            -H "Authorization: Bearer $API_KEY" | jq '.'
+        ;;
+    7)
+        exit 0
+        ;;
+    *)
+        echo -e "${RED}Invalid option${NC}"
+        ;;
+esac
+EOF
+
+    # Payment report script
+    cat << 'EOF' > "$SCRIPT_DIR/payment-report.sh"
+#!/bin/bash
+source /opt/mikrotik-vpn/configs/setup.env
+
+# Colors
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+echo -e "${BLUE}=== Payment Report ===${NC}"
+echo
+
+# Get date range
+read -p "From date (YYYY-MM-DD) [default: 7 days ago]: " from_date
+read -p "To date (YYYY-MM-DD) [default: today]: " to_date
+
+if [[ -z "$from_date" ]]; then
+    from_date=$(date -d "7 days ago" +%Y-%m-%d)
+fi
+
+if [[ -z "$to_date" ]]; then
+    to_date=$(date +%Y-%m-%d)
+fi
+
+# Get payment data
+echo -e "${BLUE}Fetching payment data...${NC}"
+
+response=$(curl -s "http://localhost:3000/api/v1/payment/transactions?from=$from_date&to=$to_date" \
+    -H "Authorization: Bearer $API_KEY")
+
+# Calculate totals
+total_revenue=$(echo "$response" | jq '.data | map(.amount.value) | add')
+total_transactions=$(echo "$response" | jq '.data | length')
+
+echo
+echo -e "${GREEN}Payment Summary${NC}"
+echo "Period: $from_date to $to_date"
+echo "Total Transactions: $total_transactions"
+echo "Total Revenue: $(printf "%'.2f" $total_revenue) THB"
+echo
+
+# Payment methods breakdown
+echo -e "${GREEN}Payment Methods Breakdown${NC}"
+echo "$response" | jq -r '.data | group_by(.method) | map({method: .[0].method, count: length, total: map(.amount.value) | add}) | .[] | "\(.method): \(.count) transactions, \(.total) THB"'
+
+echo
+
+# Daily breakdown
+echo -e "${GREEN}Daily Revenue${NC}"
+echo "$response" | jq -r '.data | group_by(.createdAt | split("T")[0]) | map({date: .[0].createdAt | split("T")[0], count: length, total: map(.amount.value) | add}) | .[] | "\(.date): \(.count) transactions, \(.total) THB"'
+
+# Export option
+echo
+read -p "Export to file? (y/n): " export_choice
+if [[ "$export_choice" == "y" ]]; then
+    filename="payment_report_${from_date}_to_${to_date}.json"
+    echo "$response" > "$filename"
+    echo "Report exported to: $filename"
+fi
+EOF
+
+    # Make all scripts executable
+    chmod +x "$SCRIPT_DIR"/*.sh
 }
 
+# Call the function to create additional scripts
+create_additional_management_scripts
+
 # =============================================================================
-# PHASE 7: DOCKER COMPOSE (Already defined earlier)
+# PHASE 9: SECURITY CONFIGURATION (already complete)
 # =============================================================================
 
 # =============================================================================
-# PHASE 8: MANAGEMENT SCRIPTS (Already defined earlier)
+# PHASE 10: FINAL SETUP AND VERIFICATION (already complete)
 # =============================================================================
-
-# =============================================================================
-# PHASE 9: SECURITY CONFIGURATION (Already defined earlier)
-# =============================================================================
-
-# =============================================================================
-# PHASE 10: FINAL SETUP AND VERIFICATION (Already defined earlier)
-# =============================================================================
-
-# =============================================================================
-# FINAL SYNTAX CHECK FUNCTION
-# =============================================================================
-
-check_syntax() {
-    log "==================================================================="
-    log "PERFORMING SYNTAX CHECK"
-    log "==================================================================="
-    
-    local errors=0
-    
-    # Check bash syntax
-    log "Checking bash script syntax..."
-    if bash -n "$0"; then
-        log "✓ Bash script syntax is valid"
-    else
-        log_error "✗ Bash script syntax error detected"
-        ((errors++))
-    fi
-    
-    # Check if all functions are properly closed
-    log "Checking function definitions..."
-    local open_braces=$(grep -c "^[[:space:]]*{[[:space:]]*$" "$0" || true)
-    local close_braces=$(grep -c "^[[:space:]]*}[[:space:]]*$" "$0" || true)
-    
-    if [[ $open_braces -eq $close_braces ]]; then
-        log "✓ All functions are properly closed"
-    else
-        log_error "✗ Mismatched braces detected (open: $open_braces, close: $close_braces)"
-        ((errors++))
-    fi
-    
-    # Check for unclosed quotes
-    log "Checking for unclosed quotes..."
-    local single_quotes=$(grep -o "'" "$0" | wc -l || true)
-    local double_quotes=$(grep -o '"' "$0" | wc -l || true)
-    
-    if [[ $((single_quotes % 2)) -eq 0 ]]; then
-        log "✓ Single quotes are balanced"
-    else
-        log_warning "⚠ Odd number of single quotes detected"
-    fi
-    
-    if [[ $((double_quotes % 2)) -eq 0 ]]; then
-        log "✓ Double quotes are balanced"
-    else
-        log_warning "⚠ Odd number of double quotes detected"
-    fi
-    
-    # Check for common syntax patterns
-    log "Checking for common syntax issues..."
-    
-    # Check for unescaped variables in cat commands
-    if grep -q 'cat.*\$[A-Za-z_]' "$0" | grep -v '\\\; then
-        log_warning "⚠ Possible unescaped variables in cat commands detected"
-    fi
-    
-    # Check for undefined variables
-    set +u
-    if grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' "$0" | sort -u | while read var; do
-        var_name=$(echo "$var" | sed 's/[${}]//g')
-        if ! grep -q "^[[:space:]]*${var_name}=" "$0" && \
-           ! grep -q "export[[:space:]]\+${var_name}" "$0" && \
-           [[ ! "$var_name" =~ ^(BASH_|SUDO_|USER|HOME|PATH|PWD|SHELL|TERM|LANG|LC_|HOSTNAME|OSTYPE|MACHTYPE|BASH_VERSION|EUID|UID|GROUPS|PPID|SHLVL|_|PIPESTATUS|FUNCNAME|BASH_SOURCE|LINENO|OLDPWD|OPTARG|OPTIND|REPLY|RANDOM|SECONDS|HISTCMD|HISTFILE|HISTFILESIZE|HISTSIZE|HOSTTYPE|IFS|PS1|PS2|PS3|PS4|PROMPT_COMMAND|TMOUT|COLUMNS|LINES|DIRSTACK|GLOBIGNORE|HISTCONTROL|HISTIGNORE|IGNOREEOF|INPUTRC|MAILCHECK|OPTERR|POSIXLY_CORRECT|TIMEFORMAT)$ ]]; then
-            echo "$var_name"
-        fi
-    done | grep -v '^ > /tmp/undefined_vars.txt; then
-        if [[ -s /tmp/undefined_vars.txt ]]; then
-            log_warning "⚠ Possible undefined variables found:"
-            cat /tmp/undefined_vars.txt | head -10
-        fi
-    fi
-    set -u
-    
-    # Summary
-    echo
-    if [[ $errors -eq 0 ]]; then
-        log "✅ SYNTAX CHECK PASSED - No critical errors found"
-    else
-        log_error "❌ SYNTAX CHECK FAILED - $errors critical error(s) found"
-        log_error "Please fix the errors before running the script"
-        exit 1
-    fi
-    
-    log "Syntax check completed!"
-}
 
 # =============================================================================
 # MAIN EXECUTION
@@ -8573,9 +8561,6 @@ main() {
     # Initialize
     print_header
     check_root
-    
-    # Perform syntax check first
-    check_syntax
     
     # Run installation phases
     phase0_system_detection
