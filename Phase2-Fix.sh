@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Phase 2 Fix Script - Resolves missing directories and functions
+# Phase 2 Comprehensive Diagnosis and Fix Script
 # =============================================================================
 
 set -euo pipefail
@@ -9,11 +9,18 @@ set -euo pipefail
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 
 # Directories
 SYSTEM_DIR="/opt/mikrotik-vpn"
 APP_DIR="$SYSTEM_DIR/app"
+CONFIG_DIR="$SYSTEM_DIR/configs"
+
+# Load environment
+if [[ -f "$CONFIG_DIR/setup.env" ]]; then
+    source "$CONFIG_DIR/setup.env"
+fi
 
 # Logging functions
 log() {
@@ -28,1314 +35,762 @@ log_warning() {
     echo -e "${YELLOW}[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: $1${NC}"
 }
 
-# =============================================================================
-# FIX 1: Create missing services directory
-# =============================================================================
-fix_services_directory() {
-    log "Creating missing services directory..."
-    mkdir -p "$APP_DIR/src/services"
-    
-    # Create voucherPrintService.js
-    cat << 'EOF' > "$APP_DIR/src/services/voucherPrintService.js"
-const fs = require('fs').promises;
-const path = require('path');
-const Handlebars = require('handlebars');
-const puppeteer = require('puppeteer');
-const { ThermalPrinter, PrinterTypes } = require('node-thermal-printer');
-
-class VoucherPrintService {
-    constructor() {
-        this.templates = new Map();
-        this.loadTemplates();
-    }
-
-    async loadTemplates() {
-        const templatesDir = path.join(__dirname, '../voucher-templates');
-        
-        try {
-            // Load HTML templates
-            const defaultTemplate = await fs.readFile(
-                path.join(templatesDir, 'default.html'),
-                'utf8'
-            );
-            this.templates.set('default', Handlebars.compile(defaultTemplate));
-            
-            // Load thermal template
-            const thermalTemplate = require(path.join(templatesDir, 'thermal.js'));
-            this.templates.set('thermal', thermalTemplate);
-        } catch (error) {
-            console.error('Failed to load voucher templates:', error);
-        }
-    }
-
-    async generatePDF(vouchers, options = {}) {
-        const template = this.templates.get(options.template || 'default');
-        if (!template) {
-            throw new Error('Template not found');
-        }
-
-        // Prepare data
-        const data = {
-            vouchers: vouchers.map(v => ({
-                ...v.toObject(),
-                organizationName: options.organizationName || 'WiFi Hotspot',
-                instructions: options.instructions || 'Connect to WiFi and enter code',
-                showQR: options.showQR !== false,
-                showPrice: options.showPrice !== false
-            }))
-        };
-
-        // Generate HTML
-        const html = template(data);
-
-        // Convert to PDF using Puppeteer
-        const browser = await puppeteer.launch({
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
-
-        try {
-            const page = await browser.newPage();
-            await page.setContent(html, { waitUntil: 'networkidle0' });
-            
-            const pdf = await page.pdf({
-                format: 'A4',
-                printBackground: true,
-                margin: {
-                    top: '10mm',
-                    right: '10mm',
-                    bottom: '10mm',
-                    left: '10mm'
-                }
-            });
-
-            return pdf;
-        } finally {
-            await browser.close();
-        }
-    }
-
-    async printToThermalPrinter(vouchers, printerConfig) {
-        const printer = new ThermalPrinter({
-            type: PrinterTypes[printerConfig.type] || PrinterTypes.EPSON,
-            interface: printerConfig.interface,
-            options: {
-                timeout: printerConfig.timeout || 5000
-            }
-        });
-
-        const template = this.templates.get('thermal');
-        if (!template) {
-            throw new Error('Thermal template not found');
-        }
-
-        try {
-            for (const voucher of vouchers) {
-                // Generate commands for this voucher
-                const commands = template.generateCommands(voucher);
-                
-                // Send raw commands to printer
-                printer.raw(Buffer.from(commands));
-                
-                // Execute print
-                await printer.execute();
-                
-                // Clear buffer for next voucher
-                printer.clear();
-            }
-        } catch (error) {
-            throw new Error(`Thermal printing failed: ${error.message}`);
-        }
-    }
-
-    async generateBatchPrintJob(batchId, format = 'pdf') {
-        const VoucherBatch = require('../../models/Voucher').VoucherBatch;
-        const Voucher = require('../../models/Voucher');
-
-        const batch = await VoucherBatch.findById(batchId).populate('profile');
-        if (!batch) {
-            throw new Error('Batch not found');
-        }
-
-        const vouchers = await Voucher.find({
-            batch: batchId,
-            status: 'available'
-        }).populate('profile');
-
-        if (format === 'pdf') {
-            return this.generatePDF(vouchers, {
-                organizationName: batch.organization.name,
-                template: batch.printTemplate || 'default'
-            });
-        } else if (format === 'thermal') {
-            // Return thermal print data
-            const template = this.templates.get('thermal');
-            return vouchers.map(v => ({
-                code: v.code,
-                commands: template.generateCommands(v)
-            }));
-        }
-
-        throw new Error('Unsupported format');
-    }
-
-    async createPrintPreview(voucher, template = 'default') {
-        const tmpl = this.templates.get(template);
-        if (!tmpl) {
-            throw new Error('Template not found');
-        }
-
-        if (template === 'thermal') {
-            // Return thermal commands as text preview
-            return {
-                type: 'text',
-                content: tmpl.generateCommands(voucher)
-            };
-        }
-
-        // Generate HTML preview
-        const html = tmpl({
-            vouchers: [voucher],
-            organizationName: 'WiFi Hotspot',
-            instructions: 'Connect to WiFi and enter code',
-            showQR: true,
-            showPrice: true
-        });
-
-        return {
-            type: 'html',
-            content: html
-        };
-    }
-}
-
-module.exports = new VoucherPrintService();
-EOF
-
-    # Create reportService.js (trimmed version due to length)
-    cat << 'EOF' > "$APP_DIR/src/services/reportService.js"
-const Report = require('../../models/Report');
-const Device = require('../../models/Device');
-const HotspotUser = require('../../models/HotspotUser');
-const HotspotSession = require('../../models/HotspotSession');
-const Voucher = require('../../models/Voucher');
-const { VoucherBatch } = require('../../models/Voucher');
-const PDFDocument = require('pdfkit');
-const ExcelJS = require('exceljs');
-const fs = require('fs').promises;
-const path = require('path');
-const logger = require('../../utils/logger');
-
-class ReportService {
-    constructor() {
-        this.reportsDir = path.join(process.cwd(), 'storage/reports');
-        this.ensureReportsDirectory();
-    }
-
-    async ensureReportsDirectory() {
-        try {
-            await fs.mkdir(this.reportsDir, { recursive: true });
-        } catch (error) {
-            logger.error('Failed to create reports directory:', error);
-        }
-    }
-
-    async generateReport(reportId) {
-        const report = await Report.findById(reportId);
-        if (!report) {
-            throw new Error('Report not found');
-        }
-
-        try {
-            await report.markAsProcessing();
-
-            // Generate report data based on type
-            const data = await this.generateReportData(report);
-            report.data = data;
-
-            // Generate report file based on format
-            const { filePath, fileSize } = await this.generateReportFile(report);
-
-            // Store file path
-            const fileUrl = `/storage/reports/${path.basename(filePath)}`;
-            await report.markAsCompleted(fileUrl, fileSize);
-
-            // Send email if requested
-            if (report.emailTo && report.emailTo.length > 0) {
-                await this.emailReport(report);
-            }
-
-            logger.info(`Report ${reportId} generated successfully`);
-        } catch (error) {
-            logger.error(`Failed to generate report ${reportId}:`, error);
-            await report.markAsFailed(error.message);
-            throw error;
-        }
-    }
-
-    async generateReportData(report) {
-        switch (report.type) {
-            case 'daily-summary':
-                return this.generateDailySummary(report);
-            case 'weekly-summary':
-                return this.generateWeeklySummary(report);
-            case 'monthly-summary':
-                return this.generateMonthlySummary(report);
-            case 'device-status':
-                return this.generateDeviceStatus(report);
-            case 'user-activity':
-                return this.generateUserActivity(report);
-            case 'revenue':
-                return this.generateRevenueReport(report);
-            case 'bandwidth-usage':
-                return this.generateBandwidthReport(report);
-            case 'session-analytics':
-                return this.generateSessionAnalytics(report);
-            case 'voucher-sales':
-                return this.generateVoucherSales(report);
-            default:
-                throw new Error(`Unknown report type: ${report.type}`);
-        }
-    }
-
-    async generateDailySummary(report) {
-        const { start, end } = report.period;
-        const organization = report.organization;
-
-        // Get device statistics
-        const devices = await Device.find({ organization });
-        const onlineDevices = devices.filter(d => d.status === 'online').length;
-        const offlineDevices = devices.filter(d => d.status === 'offline').length;
-
-        // Get session statistics
-        const sessions = await HotspotSession.find({
-            organization,
-            startTime: { $gte: start, $lte: end }
-        });
-
-        const totalSessions = sessions.length;
-        const uniqueUsers = new Set(sessions.map(s => s.user?.toString())).size;
-        const totalDataUsage = sessions.reduce((sum, s) => 
-            sum + (s.traffic.bytesIn || 0) + (s.traffic.bytesOut || 0), 0);
-        const totalDuration = sessions.reduce((sum, s) => sum + (s.duration || 0), 0);
-
-        // Get voucher statistics
-        const vouchersSold = await Voucher.countDocuments({
-            organization,
-            soldAt: { $gte: start, $lte: end }
-        });
-
-        const vouchersActivated = await Voucher.countDocuments({
-            organization,
-            activatedAt: { $gte: start, $lte: end }
-        });
-
-        const revenue = await Voucher.aggregate([
-            {
-                $match: {
-                    organization,
-                    soldAt: { $gte: start, $lte: end },
-                    'price.amount': { $gt: 0 }
-                }
-            },
-            {
-                $group: {
-                    _id: null,
-                    total: { $sum: '$price.amount' }
-                }
-            }
-        ]);
-
-        // Get active users right now
-        const activeSessions = await HotspotSession.countDocuments({
-            organization,
-            status: 'active'
-        });
-
-        return {
-            date: start,
-            devices: {
-                total: devices.length,
-                online: onlineDevices,
-                offline: offlineDevices,
-                uptime: Math.round((onlineDevices / devices.length) * 100) || 0
-            },
-            sessions: {
-                total: totalSessions,
-                uniqueUsers,
-                active: activeSessions,
-                avgDuration: totalSessions > 0 ? Math.round(totalDuration / totalSessions) : 0,
-                totalDuration
-            },
-            traffic: {
-                totalBytes: totalDataUsage,
-                avgPerSession: totalSessions > 0 ? Math.round(totalDataUsage / totalSessions) : 0,
-                avgPerUser: uniqueUsers > 0 ? Math.round(totalDataUsage / uniqueUsers) : 0
-            },
-            vouchers: {
-                sold: vouchersSold,
-                activated: vouchersActivated,
-                revenue: revenue[0]?.total || 0
-            }
-        };
-    }
-
-    // Add other report generation methods...
-    async generateWeeklySummary(report) {
-        // Implementation here
-        return {};
-    }
-
-    async generateMonthlySummary(report) {
-        // Implementation here
-        return {};
-    }
-
-    async generateDeviceStatus(report) {
-        // Implementation here
-        return {};
-    }
-
-    async generateUserActivity(report) {
-        // Implementation here
-        return {};
-    }
-
-    async generateRevenueReport(report) {
-        // Implementation here
-        return {};
-    }
-
-    async generateBandwidthReport(report) {
-        // Implementation here
-        return {};
-    }
-
-    async generateSessionAnalytics(report) {
-        // Implementation here
-        return {};
-    }
-
-    async generateVoucherSales(report) {
-        // Implementation here
-        return {};
-    }
-
-    async generateReportFile(report) {
-        const filename = `${report.type}_${Date.now()}.${report.format}`;
-        const filePath = path.join(this.reportsDir, filename);
-
-        switch (report.format) {
-            case 'pdf':
-                await this.generatePDFReport(report, filePath);
-                break;
-            case 'excel':
-                await this.generateExcelReport(report, filePath);
-                break;
-            case 'csv':
-                await this.generateCSVReport(report, filePath);
-                break;
-            case 'json':
-                await fs.writeFile(filePath, JSON.stringify(report.data, null, 2));
-                break;
-            default:
-                throw new Error(`Unsupported format: ${report.format}`);
-        }
-
-        const stats = await fs.stat(filePath);
-        return { filePath, fileSize: stats.size };
-    }
-
-    async generatePDFReport(report, filePath) {
-        const doc = new PDFDocument({ 
-            size: 'A4',
-            margins: { top: 50, bottom: 50, left: 50, right: 50 }
-        });
-
-        const stream = require('fs').createWriteStream(filePath);
-        doc.pipe(stream);
-
-        // Header
-        doc.fontSize(20).text(report.name, { align: 'center' });
-        doc.fontSize(12).text(`Generated: ${new Date().toLocaleString()}`, { align: 'center' });
-        doc.moveDown();
-
-        // Basic content
-        doc.fontSize(10).text(JSON.stringify(report.data, null, 2));
-
-        doc.end();
-        
-        return new Promise((resolve, reject) => {
-            stream.on('finish', resolve);
-            stream.on('error', reject);
-        });
-    }
-
-    async generateExcelReport(report, filePath) {
-        const workbook = new ExcelJS.Workbook();
-        const sheet = workbook.addWorksheet('Report');
-        
-        // Add basic data
-        sheet.addRow(['Report Data']);
-        sheet.addRow([JSON.stringify(report.data, null, 2)]);
-        
-        await workbook.xlsx.writeFile(filePath);
-    }
-
-    async generateCSVReport(report, filePath) {
-        const csv = JSON.stringify(report.data, null, 2);
-        await fs.writeFile(filePath, csv);
-    }
-
-    async getReportFile(report) {
-        const filePath = path.join(this.reportsDir, path.basename(report.fileUrl));
-        
-        try {
-            await fs.access(filePath);
-            return require('fs').createReadStream(filePath);
-        } catch (error) {
-            return null;
-        }
-    }
-
-    async deleteReportFile(report) {
-        if (!report.fileUrl) return;
-        
-        const filePath = path.join(this.reportsDir, path.basename(report.fileUrl));
-        
-        try {
-            await fs.unlink(filePath);
-        } catch (error) {
-            logger.error(`Failed to delete report file: ${error.message}`);
-        }
-    }
-
-    async emailReport(report) {
-        // TODO: Implement email sending
-        logger.info('Email report not implemented yet');
-    }
-
-    async scheduleReport(report) {
-        // TODO: Implement report scheduling
-        logger.info('Report scheduling not implemented yet');
-    }
-
-    async getDashboardStatistics(organizationId, period = 'today') {
-        // Basic implementation
-        return {
-            devices: { total: 0, online: 0, offline: 0 },
-            sessions: { active: 0, today: 0 },
-            revenue: { today: 0 },
-            vouchers: { available: 0 }
-        };
-    }
-
-    async getRealtimeMetrics(organizationId) {
-        // Basic implementation
-        return [];
-    }
-
-    // Helper methods
-    formatBytes(bytes) {
-        if (bytes === 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    }
-
-    formatDuration(seconds) {
-        if (seconds < 60) return `${seconds}s`;
-        if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-        if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
-        return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
-    }
-}
-
-module.exports = new ReportService();
-EOF
-
-    log "Services directory and files created"
+log_info() {
+    echo -e "${BLUE}[$(date '+%Y-%m-%d %H:%M:%S')] INFO: $1${NC}"
 }
 
 # =============================================================================
-# FIX 2: Create missing route files
+# STEP 1: Stop all services
 # =============================================================================
-fix_missing_routes() {
-    log "Creating missing route files..."
+stop_services() {
+    log "Stopping all services..."
     
-    # Create hotspot routes
-    cat << 'EOF' > "$APP_DIR/routes/hotspot.js"
-const express = require('express');
-const router = express.Router();
-const hotspotController = require('../controllers/hotspotController');
-const { auth, authorize } = require('../middleware/auth');
-const { body, param, query } = require('express-validator');
-
-// All routes require authentication
-router.use(auth);
-
-// User management routes
-router.get('/users',
-    authorize('admin', 'operator', 'viewer'),
-    hotspotController.getUsers.bind(hotspotController)
-);
-
-router.get('/users/:id',
-    authorize('admin', 'operator', 'viewer'),
-    param('id').isMongoId(),
-    hotspotController.getUser.bind(hotspotController)
-);
-
-router.post('/users',
-    authorize('admin', 'operator'),
-    body('deviceId').isMongoId(),
-    body('username').notEmpty(),
-    body('password').notEmpty(),
-    body('profileId').isMongoId(),
-    hotspotController.createUser.bind(hotspotController)
-);
-
-router.put('/users/:id',
-    authorize('admin', 'operator'),
-    param('id').isMongoId(),
-    hotspotController.updateUser.bind(hotspotController)
-);
-
-router.delete('/users/:id',
-    authorize('admin'),
-    param('id').isMongoId(),
-    hotspotController.deleteUser.bind(hotspotController)
-);
-
-router.post('/users/bulk',
-    authorize('admin', 'operator'),
-    body('deviceId').isMongoId(),
-    body('profileId').isMongoId(),
-    body('count').isInt({ min: 1, max: 1000 }),
-    hotspotController.bulkCreateUsers.bind(hotspotController)
-);
-
-// Session routes
-router.get('/sessions',
-    authorize('admin', 'operator', 'viewer'),
-    hotspotController.getActiveSessions.bind(hotspotController)
-);
-
-router.delete('/sessions/:deviceId/:sessionId',
-    authorize('admin', 'operator'),
-    param('deviceId').isMongoId(),
-    param('sessionId').notEmpty(),
-    hotspotController.disconnectSession.bind(hotspotController)
-);
-
-// Profile routes
-router.get('/profiles',
-    authorize('admin', 'operator', 'viewer'),
-    hotspotController.getProfiles.bind(hotspotController)
-);
-
-router.post('/profiles',
-    authorize('admin'),
-    body('name').notEmpty(),
-    body('mikrotikName').notEmpty(),
-    hotspotController.createProfile.bind(hotspotController)
-);
-
-router.put('/profiles/:id',
-    authorize('admin'),
-    param('id').isMongoId(),
-    hotspotController.updateProfile.bind(hotspotController)
-);
-
-router.delete('/profiles/:id',
-    authorize('admin'),
-    param('id').isMongoId(),
-    hotspotController.deleteProfile.bind(hotspotController)
-);
-
-// Export routes
-router.get('/users/export',
-    authorize('admin', 'operator'),
-    hotspotController.exportUsers.bind(hotspotController)
-);
-
-module.exports = router;
-EOF
-
-    # Create voucher routes
-    cat << 'EOF' > "$APP_DIR/routes/vouchers.js"
-const express = require('express');
-const router = express.Router();
-const voucherController = require('../controllers/voucherController');
-const { auth, authorize } = require('../middleware/auth');
-const { body, param, query } = require('express-validator');
-
-// All routes require authentication
-router.use(auth);
-
-// Batch routes
-router.get('/batches',
-    authorize('admin', 'operator', 'viewer'),
-    voucherController.getBatches.bind(voucherController)
-);
-
-router.post('/batches',
-    authorize('admin', 'operator'),
-    body('profileId').isMongoId(),
-    body('count').isInt({ min: 1, max: 10000 }),
-    voucherController.createBatch.bind(voucherController)
-);
-
-// Voucher routes
-router.get('/',
-    authorize('admin', 'operator', 'viewer'),
-    voucherController.getVouchers.bind(voucherController)
-);
-
-router.get('/:id',
-    authorize('admin', 'operator', 'viewer'),
-    voucherController.getVoucher.bind(voucherController)
-);
-
-router.post('/sell',
-    authorize('admin', 'operator', 'seller'),
-    body('code').notEmpty(),
-    voucherController.sellVoucher.bind(voucherController)
-);
-
-router.post('/activate',
-    authorize('admin', 'operator'),
-    body('code').notEmpty(),
-    body('deviceId').isMongoId(),
-    voucherController.activateVoucher.bind(voucherController)
-);
-
-router.post('/print',
-    authorize('admin', 'operator'),
-    voucherController.printVouchers.bind(voucherController)
-);
-
-router.post('/:id/cancel',
-    authorize('admin'),
-    param('id').isMongoId(),
-    voucherController.cancelVoucher.bind(voucherController)
-);
-
-// Statistics
-router.get('/stats/summary',
-    authorize('admin', 'operator', 'viewer'),
-    voucherController.getStatistics.bind(voucherController)
-);
-
-module.exports = router;
-EOF
-
-    # Create report routes
-    cat << 'EOF' > "$APP_DIR/routes/reports.js"
-const express = require('express');
-const router = express.Router();
-const reportController = require('../controllers/reportController');
-const { auth, authorize } = require('../middleware/auth');
-const { body, param, query } = require('express-validator');
-
-// All routes require authentication
-router.use(auth);
-
-// Report routes
-router.get('/',
-    authorize('admin', 'operator', 'viewer'),
-    reportController.getReports.bind(reportController)
-);
-
-router.get('/types',
-    authorize('admin', 'operator', 'viewer'),
-    reportController.getReportTypes.bind(reportController)
-);
-
-router.get('/:id',
-    authorize('admin', 'operator', 'viewer'),
-    param('id').isMongoId(),
-    reportController.getReport.bind(reportController)
-);
-
-router.post('/generate',
-    authorize('admin', 'operator'),
-    body('type').notEmpty(),
-    body('startDate').isISO8601(),
-    body('endDate').isISO8601(),
-    reportController.generateReport.bind(reportController)
-);
-
-router.get('/:id/download',
-    authorize('admin', 'operator', 'viewer'),
-    param('id').isMongoId(),
-    reportController.downloadReport.bind(reportController)
-);
-
-router.delete('/:id',
-    authorize('admin'),
-    param('id').isMongoId(),
-    reportController.deleteReport.bind(reportController)
-);
-
-router.post('/schedule',
-    authorize('admin'),
-    body('type').notEmpty(),
-    body('schedule.frequency').isIn(['once', 'daily', 'weekly', 'monthly']),
-    reportController.scheduleReport.bind(reportController)
-);
-
-// Dashboard routes
-router.get('/dashboard/stats',
-    authorize('admin', 'operator', 'viewer'),
-    reportController.getDashboardStats.bind(reportController)
-);
-
-router.get('/dashboard/realtime',
-    authorize('admin', 'operator', 'viewer'),
-    reportController.getRealtimeMetrics.bind(reportController)
-);
-
-module.exports = router;
-EOF
-
-    log "Route files created"
-}
-
-# =============================================================================
-# FIX 3: Create missing models if needed
-# =============================================================================
-fix_missing_models() {
-    log "Checking for missing models..."
+    cd "$SYSTEM_DIR"
+    docker compose down || true
     
-    # Create ActivityLog model if missing
-    if [ ! -f "$APP_DIR/models/ActivityLog.js" ]; then
-        cat << 'EOF' > "$APP_DIR/models/ActivityLog.js"
-const mongoose = require('mongoose');
-
-const activityLogSchema = new mongoose.Schema({
-    user: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true
-    },
-    action: {
-        type: String,
-        required: true
-    },
-    target: mongoose.Schema.Types.ObjectId,
-    targetModel: String,
-    details: mongoose.Schema.Types.Mixed,
-    ipAddress: String,
-    userAgent: String,
-    organization: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Organization'
-    }
-}, {
-    timestamps: true
-});
-
-// Indexes
-activityLogSchema.index({ user: 1, createdAt: -1 });
-activityLogSchema.index({ action: 1, createdAt: -1 });
-activityLogSchema.index({ organization: 1, createdAt: -1 });
-
-module.exports = mongoose.model('ActivityLog', activityLogSchema);
-EOF
-        log "ActivityLog model created"
-    fi
-    
-    # Create DeviceStatistics model if missing
-    if [ ! -f "$APP_DIR/models/DeviceStatistics.js" ]; then
-        cat << 'EOF' > "$APP_DIR/models/DeviceStatistics.js"
-const mongoose = require('mongoose');
-
-const deviceStatisticsSchema = new mongoose.Schema({
-    device: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Device',
-        required: true
-    },
-    timestamp: {
-        type: Date,
-        required: true,
-        default: Date.now
-    },
-    system: {
-        cpuLoad: Number,
-        memoryUsage: Number,
-        diskUsage: Number,
-        temperature: Number,
-        uptime: Number
-    },
-    traffic: {
-        bytesIn: Number,
-        bytesOut: Number,
-        packetsIn: Number,
-        packetsOut: Number,
-        errors: Number
-    },
-    hotspot: {
-        activeUsers: Number
-    }
-}, {
-    timestamps: true
-});
-
-// Indexes
-deviceStatisticsSchema.index({ device: 1, timestamp: -1 });
-deviceStatisticsSchema.index({ timestamp: -1 });
-
-// TTL index to automatically delete old statistics after 90 days
-deviceStatisticsSchema.index({ timestamp: 1 }, { expireAfterSeconds: 7776000 });
-
-module.exports = mongoose.model('DeviceStatistics', deviceStatisticsSchema);
-EOF
-        log "DeviceStatistics model created"
-    fi
-    
-    # Create ConfigTemplate model if missing
-    if [ ! -f "$APP_DIR/models/ConfigTemplate.js" ]; then
-        cat << 'EOF' > "$APP_DIR/models/ConfigTemplate.js"
-const mongoose = require('mongoose');
-
-const configTemplateSchema = new mongoose.Schema({
-    organization: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Organization',
-        required: true
-    },
-    name: {
-        type: String,
-        required: true
-    },
-    description: String,
-    type: {
-        type: String,
-        enum: ['hotspot', 'vpn', 'firewall', 'qos', 'general'],
-        required: true
-    },
-    commands: [{
-        command: String,
-        params: mongoose.Schema.Types.Mixed,
-        order: Number
-    }],
-    variables: [{
-        name: String,
-        description: String,
-        type: String,
-        default: mongoose.Schema.Types.Mixed,
-        required: Boolean
-    }],
-    isDefault: {
-        type: Boolean,
-        default: false
-    },
-    isActive: {
-        type: Boolean,
-        default: true
-    },
-    createdBy: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true
-    }
-}, {
-    timestamps: true
-});
-
-module.exports = mongoose.model('ConfigTemplate', configTemplateSchema);
-EOF
-        log "ConfigTemplate model created"
-    fi
-}
-
-# =============================================================================
-# FIX 4: Create utils directory and files
-# =============================================================================
-fix_utils_directory() {
-    log "Creating utils directory and files..."
-    mkdir -p "$APP_DIR/utils"
-    
-    # Create alerts utility
-    if [ ! -f "$APP_DIR/utils/alerts.js" ]; then
-        cat << 'EOF' > "$APP_DIR/utils/alerts.js"
-const logger = require('./logger');
-
-async function sendAlert(alert) {
-    try {
-        // Log the alert
-        logger.warn(`Alert: ${alert.type} - ${alert.message}`, alert);
-        
-        // TODO: Implement email/SMS/webhook notifications
-        
-        // For now, just emit via socket if available
-        const io = global.io;
-        if (io) {
-            io.emit('alert', alert);
-        }
-        
-        return true;
-    } catch (error) {
-        logger.error('Failed to send alert:', error);
-        return false;
-    }
-}
-
-module.exports = { sendAlert };
-EOF
-        log "Alerts utility created"
-    fi
-    
-    # Create email utility
-    if [ ! -f "$APP_DIR/utils/email.js" ]; then
-        cat << 'EOF' > "$APP_DIR/utils/email.js"
-const nodemailer = require('nodemailer');
-const logger = require('./logger');
-
-class EmailService {
-    constructor() {
-        this.transporter = null;
-        this.initialize();
-    }
-
-    initialize() {
-        if (process.env.SMTP_HOST) {
-            this.transporter = nodemailer.createTransport({
-                host: process.env.SMTP_HOST,
-                port: process.env.SMTP_PORT || 587,
-                secure: process.env.SMTP_SECURE === 'true',
-                auth: {
-                    user: process.env.SMTP_USER,
-                    pass: process.env.SMTP_PASS
-                }
-            });
-        }
-    }
-
-    async sendEmail(options) {
-        if (!this.transporter) {
-            logger.warn('Email service not configured');
-            return false;
-        }
-
-        try {
-            const mailOptions = {
-                from: process.env.SMTP_FROM || 'noreply@mikrotik-vpn.local',
-                to: options.to,
-                subject: options.subject,
-                text: options.text,
-                html: options.html
-            };
-
-            const info = await this.transporter.sendMail(mailOptions);
-            logger.info(`Email sent: ${info.messageId}`);
-            return true;
-        } catch (error) {
-            logger.error('Failed to send email:', error);
-            return false;
-        }
-    }
-}
-
-module.exports = new EmailService();
-EOF
-        log "Email utility created"
-    fi
-}
-
-# =============================================================================
-# FIX 5: Update storage directory structure
-# =============================================================================
-fix_storage_directories() {
-    log "Creating storage directories..."
-    
-    mkdir -p "$SYSTEM_DIR/storage/reports"
-    mkdir -p "$SYSTEM_DIR/storage/backups"
-    mkdir -p "$SYSTEM_DIR/storage/exports"
-    mkdir -p "$SYSTEM_DIR/storage/temp"
-    
-    # Set permissions
-    chown -R mikrotik-vpn:mikrotik-vpn "$SYSTEM_DIR/storage"
-    chmod -R 755 "$SYSTEM_DIR/storage"
-    
-    log "Storage directories created"
-}
-
-# =============================================================================
-# FIX 6: Update Docker container permissions
-# =============================================================================
-fix_docker_permissions() {
-    log "Updating Docker container permissions..."
-    
-    # First, stop the container to prevent restart loop
-    log "Stopping container to fix issues..."
-    docker stop mikrotik-app 2>/dev/null || true
-    
-    # Wait a moment
-    sleep 2
-    
-    # Fix permissions directly on the host
-    chown -R 1000:1000 "$APP_DIR"
-    chmod -R 755 "$APP_DIR"
-    
-    # Start container again
-    log "Starting container..."
-    docker start mikrotik-app
-    
-    # Wait for container to be ready
-    log "Waiting for container to be ready..."
+    # Wait for containers to stop
     sleep 5
     
-    # Check container status
-    if docker ps | grep -q mikrotik-app; then
-        log "Container is running"
-    else
-        log_error "Container failed to start. Checking logs..."
-        docker logs mikrotik-app --tail 50
-    fi
+    # Force stop if still running
+    docker stop mikrotik-app 2>/dev/null || true
+    docker stop mikrotik-mongodb 2>/dev/null || true
+    docker stop mikrotik-redis 2>/dev/null || true
+    
+    log "All services stopped"
 }
 
 # =============================================================================
-# FIX 7: Check and fix application errors
+# STEP 2: Check and fix file structure
 # =============================================================================
-fix_application_errors() {
-    log "Checking for application errors..."
+fix_file_structure() {
+    log "Fixing file structure..."
     
-    # Check if email utility exists and fix require statement
-    if [ ! -f "$APP_DIR/utils/email.js" ]; then
-        cat << 'EOF' > "$APP_DIR/utils/email.js"
-const logger = require('./logger');
-
-class EmailService {
-    constructor() {
-        this.transporter = null;
-    }
-
-    async sendEmail(options) {
-        logger.warn('Email service not configured');
-        return false;
-    }
+    # Create all necessary directories
+    directories=(
+        "$APP_DIR/src/services"
+        "$APP_DIR/src/mikrotik/lib"
+        "$APP_DIR/src/mikrotik/templates"
+        "$APP_DIR/src/mikrotik/scripts"
+        "$APP_DIR/src/voucher-templates"
+        "$APP_DIR/src/report-templates"
+        "$APP_DIR/controllers"
+        "$APP_DIR/models"
+        "$APP_DIR/routes"
+        "$APP_DIR/middleware"
+        "$APP_DIR/utils"
+        "$SYSTEM_DIR/storage/reports"
+        "$SYSTEM_DIR/storage/backups"
+        "$SYSTEM_DIR/storage/exports"
+        "$SYSTEM_DIR/storage/temp"
+    )
+    
+    for dir in "${directories[@]}"; do
+        if [ ! -d "$dir" ]; then
+            mkdir -p "$dir"
+            log_info "Created directory: $dir"
+        fi
+    done
+    
+    # Fix permissions
+    chown -R 1000:1000 "$APP_DIR"
+    chmod -R 755 "$APP_DIR"
+    chown -R mikrotik-vpn:mikrotik-vpn "$SYSTEM_DIR/storage"
+    chmod -R 755 "$SYSTEM_DIR/storage"
 }
 
-module.exports = new EmailService();
-EOF
+# =============================================================================
+# STEP 3: Create minimal working server.js
+# =============================================================================
+create_minimal_server() {
+    log "Creating minimal server.js..."
+    
+    # Backup original server.js
+    if [ -f "$APP_DIR/server.js" ]; then
+        cp "$APP_DIR/server.js" "$APP_DIR/server.js.phase2.backup"
     fi
     
-    # Fix missing Organization model reference
-    if ! grep -q "const Organization" "$APP_DIR/src/mikrotik/lib/device-monitor.js"; then
-        sed -i '1a\const Organization = require('\''../../../models/Organization'\'');' "$APP_DIR/src/mikrotik/lib/device-monitor.js"
-    fi
-    
-    # Fix missing DeviceStatistics reference
-    if ! grep -q "const DeviceStatistics" "$APP_DIR/src/mikrotik/lib/device-monitor.js"; then
-        sed -i '1a\const DeviceStatistics = require('\''../../../models/DeviceStatistics'\'');' "$APP_DIR/src/mikrotik/lib/device-monitor.js"
-    fi
-    
-    # Create missing Organization model if it doesn't exist
-    if [ ! -f "$APP_DIR/models/Organization.js" ]; then
-        cat << 'EOF' > "$APP_DIR/models/Organization.js"
+    # Create a minimal working server.js
+    cat << 'EOF' > "$APP_DIR/server.js"
+require('dotenv').config();
+const express = require('express');
 const mongoose = require('mongoose');
+const cors = require('cors');
+const helmet = require('helmet');
+const morgan = require('morgan');
+const compression = require('compression');
+const path = require('path');
+const http = require('http');
+const socketIO = require('socket.io');
 
-const organizationSchema = new mongoose.Schema({
-    name: {
-        type: String,
-        required: true,
-        unique: true,
-        trim: true
-    },
-    email: {
-        type: String,
-        required: true,
-        lowercase: true,
-        trim: true
-    },
-    phone: String,
-    address: {
-        street: String,
-        city: String,
-        state: String,
-        country: String,
-        postalCode: String
-    },
-    settings: {
-        timezone: {
-            type: String,
-            default: 'Asia/Bangkok'
-        },
-        currency: {
-            type: String,
-            default: 'THB'
-        },
-        language: {
-            type: String,
-            default: 'th'
-        }
-    },
-    isActive: {
-        type: Boolean,
-        default: true
-    },
-    createdBy: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User'
+// Initialize express app
+const app = express();
+const server = http.createServer(app);
+const io = socketIO(server, {
+    cors: {
+        origin: process.env.CLIENT_URL || '*',
+        credentials: true
     }
-}, {
-    timestamps: true
 });
 
-module.exports = mongoose.model('Organization', organizationSchema);
-EOF
-        log "Organization model created"
-    fi
-    
-    # Fix server.js to handle missing routes gracefully
-    if grep -q "Phase 2 Routes" "$APP_DIR/server.js"; then
-        # Create a temporary fix for server.js
-        cat << 'EOF' > "$APP_DIR/server-phase2-routes.js"
-// Phase 2 Routes Integration
+// Make io globally accessible
+global.io = io;
+
+// Logger setup
 const logger = require('./utils/logger');
 
-module.exports = function(app, io) {
-    try {
-        // Device routes
-        const deviceRoutes = require('./routes/devices');
-        app.use('/api/v1/devices', deviceRoutes);
-        logger.info('Device routes loaded');
-    } catch (error) {
-        logger.error('Failed to load device routes:', error.message);
-    }
+// Middleware
+app.use(helmet());
+app.use(cors());
+app.use(compression());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(morgan('combined', { stream: { write: msg => logger.info(msg.trim()) } }));
 
-    try {
-        // Hotspot routes
-        const hotspotRoutes = require('./routes/hotspot');
-        app.use('/api/v1/hotspot', hotspotRoutes);
-        logger.info('Hotspot routes loaded');
-    } catch (error) {
-        logger.error('Failed to load hotspot routes:', error.message);
-    }
+// Static files
+app.use('/static', express.static(path.join(__dirname, 'public')));
 
-    try {
-        // Voucher routes
-        const voucherRoutes = require('./routes/vouchers');
-        app.use('/api/v1/vouchers', voucherRoutes);
-        logger.info('Voucher routes loaded');
-    } catch (error) {
-        logger.error('Failed to load voucher routes:', error.message);
-    }
+// Health check
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'ok', 
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
+});
 
-    try {
-        // Report routes
-        const reportRoutes = require('./routes/reports');
-        app.use('/api/v1/reports', reportRoutes);
-        logger.info('Report routes loaded');
-    } catch (error) {
-        logger.error('Failed to load report routes:', error.message);
-    }
+// API routes
+app.get('/api', (req, res) => {
+    res.json({ 
+        message: 'MikroTik VPN Management API',
+        version: '2.0',
+        phase: 'Phase 2 - MikroTik Integration'
+    });
+});
 
-    // Start device monitoring if available
+// Phase 1 Routes
+try {
+    const authRoutes = require('./routes/auth');
+    const userRoutes = require('./routes/users');
+    
+    app.use('/api/v1/auth', authRoutes);
+    app.use('/api/v1/users', userRoutes);
+    
+    logger.info('Phase 1 routes loaded successfully');
+} catch (error) {
+    logger.error('Failed to load Phase 1 routes:', error.message);
+}
+
+// Phase 2 Routes - Load safely
+const phase2Routes = [
+    { path: '/api/v1/devices', file: './routes/devices', name: 'Device' },
+    { path: '/api/v1/hotspot', file: './routes/hotspot', name: 'Hotspot' },
+    { path: '/api/v1/vouchers', file: './routes/vouchers', name: 'Voucher' },
+    { path: '/api/v1/reports', file: './routes/reports', name: 'Report' }
+];
+
+phase2Routes.forEach(route => {
+    try {
+        const routeModule = require(route.file);
+        app.use(route.path, routeModule);
+        logger.info(`${route.name} routes loaded successfully`);
+    } catch (error) {
+        logger.warn(`${route.name} routes not available: ${error.message}`);
+    }
+});
+
+// Socket.IO connection handling
+io.on('connection', (socket) => {
+    logger.info(`Client connected: ${socket.id}`);
+    
+    socket.on('disconnect', () => {
+        logger.info(`Client disconnected: ${socket.id}`);
+    });
+    
+    // Join organization room
+    socket.on('join:organization', (organizationId) => {
+        socket.join(`org:${organizationId}`);
+        logger.info(`Socket ${socket.id} joined organization ${organizationId}`);
+    });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+    logger.error(err.stack);
+    res.status(err.status || 500).json({
+        success: false,
+        error: err.message || 'Internal server error',
+        ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+    });
+});
+
+// 404 handler
+app.use((req, res) => {
+    res.status(404).json({
+        success: false,
+        error: 'Route not found'
+    });
+});
+
+// Database connection
+const connectDB = async () => {
+    try {
+        const mongoUri = process.env.MONGODB_URI || 
+            `mongodb://mikrotik_app:${process.env.MONGO_APP_PASSWORD}@mongodb:27017/mikrotik_vpn?authSource=mikrotik_vpn`;
+        
+        await mongoose.connect(mongoUri, {
+            useNewUrlParser: true,
+            useUnifiedTopology: true
+        });
+        
+        logger.info('MongoDB connected successfully');
+        
+        // Initialize Phase 2 services after DB connection
+        initializePhase2Services();
+        
+    } catch (error) {
+        logger.error('MongoDB connection failed:', error);
+        // Retry after 5 seconds
+        setTimeout(connectDB, 5000);
+    }
+};
+
+// Initialize Phase 2 services
+const initializePhase2Services = () => {
+    // Device monitoring - only if available
     try {
         const DeviceMonitor = require('./src/mikrotik/lib/device-monitor');
         const deviceMonitor = new DeviceMonitor(io);
         
-        // Start monitoring after a delay to ensure DB is ready
+        // Start monitoring after delay
         setTimeout(() => {
-            deviceMonitor.start().catch(error => {
-                logger.error('Failed to start device monitor:', error.message);
+            deviceMonitor.start().catch(err => {
+                logger.error('Device monitor start failed:', err.message);
             });
         }, 10000);
         
         logger.info('Device monitor initialized');
     } catch (error) {
-        logger.error('Failed to initialize device monitor:', error.message);
+        logger.warn('Device monitor not available');
     }
-
-    // Schedule tasks
+    
+    // Scheduled tasks
     try {
         const schedule = require('node-schedule');
         
-        // Cleanup expired vouchers daily
+        // Daily cleanup tasks
         schedule.scheduleJob('0 0 * * *', async () => {
+            logger.info('Running daily cleanup tasks...');
+            
+            // Cleanup vouchers
             try {
                 const Voucher = require('./models/Voucher');
-                const expired = await Voucher.checkExpired();
-                logger.info(`Cleaned up ${expired} expired vouchers`);
-            } catch (error) {
-                logger.error('Failed to cleanup vouchers:', error.message);
+                if (Voucher.checkExpired) {
+                    const expired = await Voucher.checkExpired();
+                    logger.info(`Cleaned up ${expired} expired vouchers`);
+                }
+            } catch (err) {
+                logger.error('Voucher cleanup failed:', err.message);
             }
-        });
-
-        // Cleanup expired hotspot users daily
-        schedule.scheduleJob('0 1 * * *', async () => {
+            
+            // Cleanup hotspot users
             try {
                 const HotspotUser = require('./models/HotspotUser');
-                const expired = await HotspotUser.cleanupExpired();
-                logger.info(`Cleaned up ${expired} expired hotspot users`);
-            } catch (error) {
-                logger.error('Failed to cleanup hotspot users:', error.message);
+                if (HotspotUser.cleanupExpired) {
+                    const expired = await HotspotUser.cleanupExpired();
+                    logger.info(`Cleaned up ${expired} expired hotspot users`);
+                }
+            } catch (err) {
+                logger.error('Hotspot user cleanup failed:', err.message);
             }
         });
         
         logger.info('Scheduled tasks initialized');
     } catch (error) {
-        logger.error('Failed to initialize scheduled tasks:', error.message);
+        logger.warn('Scheduled tasks not available');
     }
 };
+
+// Start server
+const PORT = process.env.PORT || 3000;
+
+connectDB().then(() => {
+    server.listen(PORT, () => {
+        logger.info(`Server running on port ${PORT}`);
+        logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
+        logger.info('Phase 2 integration active');
+    });
+}).catch(err => {
+    logger.error('Failed to start server:', err);
+    process.exit(1);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    logger.info('SIGTERM received, shutting down gracefully...');
+    server.close(() => {
+        mongoose.connection.close(false, () => {
+            logger.info('Server closed');
+            process.exit(0);
+        });
+    });
+});
+
+module.exports = app;
 EOF
-        
-        # Update server.js to use the module
-        if ! grep -q "require('./server-phase2-routes')" "$APP_DIR/server.js"; then
-            # Remove the inline Phase 2 routes code and replace with require
-            sed -i '/\/\/ Phase 2 Routes/,/\});$/c\
-// Phase 2 Routes\
-try {\
-    require('\''./server-phase2-routes'\'')(app, io);\
-} catch (error) {\
-    logger.error('\''Failed to load Phase 2 routes:'\'', error.message);\
-}' "$APP_DIR/server.js"
-        fi
+
+    log "Minimal server.js created"
+}
+
+# =============================================================================
+# STEP 4: Create missing core files
+# =============================================================================
+create_core_files() {
+    log "Creating missing core files..."
+    
+    # Create logger if missing
+    if [ ! -f "$APP_DIR/utils/logger.js" ]; then
+        cat << 'EOF' > "$APP_DIR/utils/logger.js"
+const winston = require('winston');
+const path = require('path');
+
+const logger = winston.createLogger({
+    level: process.env.LOG_LEVEL || 'info',
+    format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.errors({ stack: true }),
+        winston.format.splat(),
+        winston.format.json()
+    ),
+    defaultMeta: { service: 'mikrotik-vpn' },
+    transports: [
+        new winston.transports.Console({
+            format: winston.format.combine(
+                winston.format.colorize(),
+                winston.format.simple()
+            )
+        }),
+        new winston.transports.File({ 
+            filename: path.join('/var/log', 'error.log'), 
+            level: 'error' 
+        }),
+        new winston.transports.File({ 
+            filename: path.join('/var/log', 'combined.log') 
+        })
+    ]
+});
+
+module.exports = logger;
+EOF
+        log_info "Logger created"
     fi
     
-    log "Application errors fixed"
+    # Create auth middleware if missing
+    if [ ! -f "$APP_DIR/middleware/auth.js" ]; then
+        cat << 'EOF' > "$APP_DIR/middleware/auth.js"
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+
+const auth = async (req, res, next) => {
+    try {
+        const token = req.header('Authorization')?.replace('Bearer ', '');
+        
+        if (!token) {
+            throw new Error();
+        }
+        
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+        const user = await User.findOne({ _id: decoded._id, 'tokens.token': token });
+        
+        if (!user) {
+            throw new Error();
+        }
+        
+        req.token = token;
+        req.user = user;
+        next();
+    } catch (error) {
+        res.status(401).json({ error: 'Please authenticate' });
+    }
+};
+
+const authorize = (...roles) => {
+    return (req, res, next) => {
+        if (!req.user) {
+            return res.status(401).json({ error: 'Not authenticated' });
+        }
+        
+        if (roles.length && !roles.includes(req.user.role)) {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+        
+        next();
+    };
+};
+
+module.exports = { auth, authorize };
+EOF
+        log_info "Auth middleware created"
+    fi
+    
+    # Create User model if missing
+    if [ ! -f "$APP_DIR/models/User.js" ]; then
+        cat << 'EOF' > "$APP_DIR/models/User.js"
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+
+const userSchema = new mongoose.Schema({
+    name: {
+        type: String,
+        required: true,
+        trim: true
+    },
+    email: {
+        type: String,
+        required: true,
+        unique: true,
+        lowercase: true,
+        trim: true
+    },
+    password: {
+        type: String,
+        required: true,
+        minlength: 6
+    },
+    role: {
+        type: String,
+        enum: ['admin', 'operator', 'viewer', 'seller'],
+        default: 'viewer'
+    },
+    organization: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Organization'
+    },
+    isActive: {
+        type: Boolean,
+        default: true
+    },
+    tokens: [{
+        token: {
+            type: String,
+            required: true
+        }
+    }]
+}, {
+    timestamps: true
+});
+
+// Hash password before saving
+userSchema.pre('save', async function(next) {
+    const user = this;
+    
+    if (user.isModified('password')) {
+        user.password = await bcrypt.hash(user.password, 8);
+    }
+    
+    next();
+});
+
+// Generate auth token
+userSchema.methods.generateAuthToken = async function() {
+    const user = this;
+    const token = jwt.sign(
+        { _id: user._id.toString() }, 
+        process.env.JWT_SECRET || 'your-secret-key'
+    );
+    
+    user.tokens = user.tokens.concat({ token });
+    await user.save();
+    
+    return token;
+};
+
+// Check password
+userSchema.methods.checkPassword = async function(password) {
+    return bcrypt.compare(password, this.password);
+};
+
+// Remove sensitive data
+userSchema.methods.toJSON = function() {
+    const user = this;
+    const userObject = user.toObject();
+    
+    delete userObject.password;
+    delete userObject.tokens;
+    
+    return userObject;
+};
+
+module.exports = mongoose.model('User', userSchema);
+EOF
+        log_info "User model created"
+    fi
+}
+
+# =============================================================================
+# STEP 5: Create basic routes
+# =============================================================================
+create_basic_routes() {
+    log "Creating basic routes..."
+    
+    # Create auth routes if missing
+    if [ ! -f "$APP_DIR/routes/auth.js" ]; then
+        cat << 'EOF' > "$APP_DIR/routes/auth.js"
+const express = require('express');
+const router = express.Router();
+const User = require('../models/User');
+const { auth } = require('../middleware/auth');
+
+// Login
+router.post('/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        
+        const user = await User.findOne({ email });
+        if (!user || !(await user.checkPassword(password))) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        
+        const token = await user.generateAuthToken();
+        
+        res.json({ user, token });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Logout
+router.post('/logout', auth, async (req, res) => {
+    try {
+        req.user.tokens = req.user.tokens.filter(token => token.token !== req.token);
+        await req.user.save();
+        
+        res.json({ message: 'Logged out successfully' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+module.exports = router;
+EOF
+        log_info "Auth routes created"
+    fi
+    
+    # Create user routes if missing
+    if [ ! -f "$APP_DIR/routes/users.js" ]; then
+        cat << 'EOF' > "$APP_DIR/routes/users.js"
+const express = require('express');
+const router = express.Router();
+const User = require('../models/User');
+const { auth, authorize } = require('../middleware/auth');
+
+// Get current user
+router.get('/me', auth, async (req, res) => {
+    res.json(req.user);
+});
+
+// Get all users (admin only)
+router.get('/', auth, authorize('admin'), async (req, res) => {
+    try {
+        const users = await User.find({});
+        res.json(users);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+module.exports = router;
+EOF
+        log_info "User routes created"
+    fi
+}
+
+# =============================================================================
+# STEP 6: Install missing npm packages
+# =============================================================================
+install_packages() {
+    log "Installing missing npm packages..."
+    
+    cd "$APP_DIR"
+    
+    # Core packages that might be missing
+    packages=(
+        "winston"
+        "jsonwebtoken"
+        "bcryptjs"
+        "express-validator"
+        "node-schedule"
+        "dotenv"
+        "compression"
+        "helmet"
+        "cors"
+        "morgan"
+    )
+    
+    for package in "${packages[@]}"; do
+        if ! grep -q "\"$package\"" package.json; then
+            log_info "Installing $package..."
+            npm install --save "$package" || log_warning "Failed to install $package"
+        fi
+    done
+}
+
+# =============================================================================
+# STEP 7: Create initialization script
+# =============================================================================
+create_init_script() {
+    log "Creating initialization script..."
+    
+    cat << 'EOF' > "$APP_DIR/init-db.js"
+const mongoose = require('mongoose');
+const User = require('./models/User');
+const Organization = require('./models/Organization');
+
+async function initializeDatabase() {
+    try {
+        // Connect to MongoDB
+        const mongoUri = process.env.MONGODB_URI || 
+            `mongodb://mikrotik_app:${process.env.MONGO_APP_PASSWORD}@mongodb:27017/mikrotik_vpn?authSource=mikrotik_vpn`;
+        
+        await mongoose.connect(mongoUri, {
+            useNewUrlParser: true,
+            useUnifiedTopology: true
+        });
+        
+        console.log('Connected to MongoDB');
+        
+        // Check if organization exists
+        let organization = await Organization.findOne();
+        if (!organization) {
+            organization = await Organization.create({
+                name: 'Default Organization',
+                email: 'admin@mikrotik-vpn.local',
+                isActive: true
+            });
+            console.log('Created default organization');
+        }
+        
+        // Check if admin user exists
+        const adminUser = await User.findOne({ email: 'admin@mikrotik-vpn.local' });
+        if (!adminUser) {
+            await User.create({
+                name: 'Admin',
+                email: 'admin@mikrotik-vpn.local',
+                password: 'admin123',
+                role: 'admin',
+                organization: organization._id
+            });
+            console.log('Created default admin user');
+            console.log('Email: admin@mikrotik-vpn.local');
+            console.log('Password: admin123');
+            console.log('IMPORTANT: Change this password immediately!');
+        }
+        
+        console.log('Database initialization completed');
+        process.exit(0);
+    } catch (error) {
+        console.error('Database initialization failed:', error);
+        process.exit(1);
+    }
+}
+
+initializeDatabase();
+EOF
+}
+
+# =============================================================================
+# STEP 8: Start services
+# =============================================================================
+start_services() {
+    log "Starting services..."
+    
+    cd "$SYSTEM_DIR"
+    
+    # Start only essential services first
+    log_info "Starting MongoDB..."
+    docker compose up -d mongodb
+    sleep 10
+    
+    log_info "Starting Redis..."
+    docker compose up -d redis
+    sleep 5
+    
+    # Initialize database
+    log_info "Initializing database..."
+    docker compose run --rm app node init-db.js || log_warning "Database initialization skipped"
+    
+    # Start app
+    log_info "Starting application..."
+    docker compose up -d app
+    
+    # Wait and check status
+    sleep 10
+    
+    if docker ps | grep -q mikrotik-app; then
+        log "Application started successfully"
+        
+        # Show logs
+        log_info "Recent application logs:"
+        docker logs mikrotik-app --tail 20
+    else
+        log_error "Application failed to start"
+        log_info "Container status:"
+        docker ps -a | grep mikrotik
+        log_info "Application logs:"
+        docker logs mikrotik-app --tail 50
+    fi
 }
 
 # =============================================================================
 # MAIN EXECUTION
 # =============================================================================
 main() {
-    log "Starting Phase 2 Fix Script"
-    log "=========================="
+    log "Starting Comprehensive Phase 2 Diagnosis and Fix"
+    log "=============================================="
     
-    # Run fixes
-    fix_services_directory
-    fix_missing_routes
-    fix_missing_models
-    fix_utils_directory
-    fix_storage_directories
-    fix_application_errors  # Add this before docker permissions
-    fix_docker_permissions
+    # Step 1: Stop everything
+    stop_services
     
-    log "=========================="
-    log "Phase 2 fixes completed!"
+    # Step 2: Fix file structure
+    fix_file_structure
+    
+    # Step 3: Create minimal server
+    create_minimal_server
+    
+    # Step 4: Create core files
+    create_core_files
+    
+    # Step 5: Create basic routes
+    create_basic_routes
+    
+    # Step 6: Install packages
+    install_packages
+    
+    # Step 7: Create init script
+    create_init_script
+    
+    # Step 8: Start services
+    start_services
+    
+    log "=============================================="
+    log "Diagnosis and fix completed!"
     log ""
-    log "All missing files and directories have been created."
-    log "The application should now work properly."
+    log "Check application status:"
+    log "  docker ps"
+    log "  docker logs mikrotik-app --tail 50"
     log ""
-    log "You can verify the fixes by checking:"
-    log "  - Services: ls -la $APP_DIR/src/services/"
-    log "  - Routes: ls -la $APP_DIR/routes/"
-    log "  - Models: ls -la $APP_DIR/models/"
-    log "  - Utils: ls -la $APP_DIR/utils/"
+    log "Test the API:"
+    log "  curl http://localhost:3000/health"
+    log "  curl http://localhost:3000/api"
     log ""
-    log "To test the application:"
-    log "  1. Check service status: docker ps"
-    log "  2. View logs: docker logs mikrotik-app"
-    log "  3. Access web interface: https://netkarn.co"
+    log "Default login:"
+    log "  Email: admin@mikrotik-vpn.local"
+    log "  Password: admin123"
     log ""
-    log "If the container is still restarting, check the logs with:"
-    log "  docker logs mikrotik-app --tail 100"
+    log "If still having issues, check:"
+    log "  1. MongoDB connection: docker logs mikrotik-mongodb"
+    log "  2. Redis connection: docker logs mikrotik-redis"
+    log "  3. Full app logs: docker logs mikrotik-app --tail 100"
 }
 
 # Execute main function
