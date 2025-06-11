@@ -1,4 +1,79 @@
-# Create additional utility scripts for management
+# Pre-deployment checklist script
+    cat << 'EOF' > "$SCRIPT_DIR/pre-deployment-check.sh"
+#!/bin/bash
+source /opt/mikrotik-vpn/configs/setup.env
+
+echo "╔═══════════════════════════════════════════════════════════════╗"
+echo "║                Pre-Deployment Checklist                       ║"
+echo "╚═══════════════════════════════════════════════════════════════╝"
+echo
+
+CHECKS_PASSED=0
+CHECKS_FAILED=0
+
+# Function to perform check
+check() {
+    local description=$1
+    local command=$2
+    
+    echo -n "• $description... "
+    
+    if eval "$command" >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ PASS${NC}"
+        CHECKS_PASSED=$((CHECKS_PASSED + 1))
+        return 0
+    else
+        echo -e "${RED}✗ FAIL${NC}"
+        CHECKS_FAILED=$((CHECKS_FAILED + 1))
+        return 1
+    fi
+}
+
+echo "System Requirements"
+echo "═════════════════"
+
+check "Operating System (Ubuntu)" "[[ -f /etc/os-release ]] && grep -q Ubuntu /etc/os-release"
+check "CPU cores (minimum 2)" "[[ \$(nproc) -ge 2 ]]"
+check "Memory (minimum 4GB)" "[[ \$(free -m | awk '/^Mem:/{print \$2}') -ge 4096 ]]"
+check "Disk space (minimum 20GB)" "[[ \$(df -BG / | awk 'NR==2 {print \$4}' | sed 's/G//') -ge 20 ]]"
+
+echo
+echo "Docker Environment"
+echo "════════════════"
+
+check "Docker installed" "command -v docker"
+check "Docker running" "docker ps"
+check "Docker Compose installed" "docker compose version"
+check "Docker network exists" "docker network ls | grep -q mikrotik-vpn-net"
+
+echo
+echo "Services Status"
+echo "═════════════"
+
+check "MongoDB running" "docker ps | grep -q mikrotik-mongodb"
+check "Redis running" "docker ps | grep -q mikrotik-redis"
+check "Application running" "docker ps | grep -q mikrotik-app"
+check "Nginx running" "docker ps | grep -q mikrotik-nginx"
+check "OpenVPN running" "docker ps | grep -q mikrotik-openvpn"
+
+echo
+echo "Configuration Files"
+echo "═════════════════"
+
+check "Environment file exists" "[[ -f /opt/mikrotik-vpn/.env ]]"
+check "Setup config exists" "[[ -f /opt/mikrotik-vpn/configs/setup.env ]]"
+check "Docker Compose file exists" "[[ -f /opt/mikrotik-vpn/docker-compose.yml ]]"
+check "SSL certificate exists" "[[ -f /opt/mikrotik-vpn/nginx/ssl/fullchain.pem ]]"
+
+echo
+echo "Network Connectivity"
+echo "═════════════════"
+
+check "Internet connectivity" "ping -c 1 8.8.8.8"
+check "DNS resolution" "nslookup google.com"
+check "HTTP port available" "! lsof -i :9080 2>/dev/null | grep -v mikrotik"
+check "HTTPS port available" "! lsof -i :9443 2>/dev/null | grep -v mikrotik"
+check "VPN port available" "! lsof -i :1194 2>/dev/null | grep -v mikrotik"# Create additional utility scripts for management
 create_management_utility_scripts() {
     # Performance monitoring script
     cat << 'EOF' > "$SCRIPT_DIR/monitor-performance.sh"
@@ -925,7 +1000,7 @@ echo "══════"
 check "Firewall configured" "command -v ufw && ufw status | grep -q active"
 check "Fail2ban installed" "command -v fail2ban-client"
 check "SSL certificate valid" "openssl x509 -checkend 86400 -noout -in /opt/mikrotik-vpn/nginx/ssl/fullchain.pem"
-check "Secure file permissions" "[[ $(stat -c %a /opt/mikrotik-vpn/configs/setup.env) == 600 ]]"#!/bin/bash
+check "Secure file permissions" "[[ \$(stat -c %a /opt/mikrotik-vpn/configs/setup.env) == 600 ]]"#!/bin/bash
 # =============================================================================
 # MikroTik VPN Management System - Complete Installation Script
 # Version: 5.0 - Fixed and Tested Edition
@@ -6472,22 +6547,22 @@ echo
 echo "Database Connectivity"
 echo "═══════════════════"
 
-check "MongoDB authentication" "docker exec mikrotik-mongodb mongosh --eval 'db.adminCommand(\"ping\")' -u admin -p '$MONGO_ROOT_PASSWORD' --authenticationDatabase admin --quiet"
-check "Redis authentication" "docker exec mikrotik-redis redis-cli --pass '$REDIS_PASSWORD' ping | grep -q PONG"
+check "MongoDB authentication" "docker exec mikrotik-mongodb mongosh --eval 'db.adminCommand(\"ping\")' -u admin -p \"\$MONGO_ROOT_PASSWORD\" --authenticationDatabase admin --quiet"
+check "Redis authentication" "docker exec mikrotik-redis redis-cli --pass \"\$REDIS_PASSWORD\" ping | grep -q PONG"
 check "Application health check" "curl -s http://localhost:3000/health | grep -q OK"
 
 echo
 echo "═══════════════════════════════════════════════════════════════"
 echo "Pre-Deployment Check Summary"
 echo "═══════════════════════════════════════════════════════════════"
-echo "Checks passed: $CHECKS_PASSED"
-echo "Checks failed: $CHECKS_FAILED"
+echo "Checks passed: \$CHECKS_PASSED"
+echo "Checks failed: \$CHECKS_FAILED"
 echo
 
-if [[ $CHECKS_FAILED -eq 0 ]]; then
-    echo -e "${GREEN}✓ All checks passed! System is ready for deployment.${NC}"
+if [[ \$CHECKS_FAILED -eq 0 ]]; then
+    echo -e "\${GREEN}✓ All checks passed! System is ready for deployment.\${NC}"
 else
-    echo -e "${RED}✗ Some checks failed. Please fix the issues before deployment.${NC}"
+    echo -e "\${RED}✗ Some checks failed. Please fix the issues before deployment.\${NC}"
     echo
     echo "Recommendations:"
     echo "• Run 'diagnose.sh' for detailed diagnostics"
