@@ -440,6 +440,13 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 const userSchema = new mongoose.Schema({
+    username: {
+        type: String,
+        required: true,
+        unique: true,
+        trim: true,
+        lowercase: true
+    },
     name: {
         type: String,
         required: true,
@@ -544,9 +551,16 @@ const { auth } = require('../middleware/auth');
 // Login
 router.post('/login', async (req, res) => {
     try {
-        const { email, password } = req.body;
+        const { email, password, username } = req.body;
         
-        const user = await User.findOne({ email });
+        // Allow login with either email or username
+        const user = await User.findOne({
+            $or: [
+                { email: email || '' },
+                { username: username || email || '' }
+            ]
+        });
+        
         if (!user || !(await user.checkPassword(password))) {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
@@ -566,6 +580,18 @@ router.post('/logout', auth, async (req, res) => {
         await req.user.save();
         
         res.json({ message: 'Logged out successfully' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Logout all sessions
+router.post('/logoutAll', auth, async (req, res) => {
+    try {
+        req.user.tokens = [];
+        await req.user.save();
+        
+        res.json({ message: 'Logged out from all devices' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -633,6 +659,19 @@ install_packages() {
             npm install --save "$package" || log_warning "Failed to install $package"
         fi
     done
+    
+    # Check and create .env file if missing
+    if [ ! -f "$APP_DIR/.env" ]; then
+        log_info "Creating .env file..."
+        cat << EOF > "$APP_DIR/.env"
+NODE_ENV=production
+PORT=3000
+JWT_SECRET=$(openssl rand -base64 32)
+MONGODB_URI=mongodb://mikrotik_app:${MONGO_APP_PASSWORD}@mongodb:27017/mikrotik_vpn?authSource=mikrotik_vpn
+REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+CLIENT_URL=https://${DOMAIN_NAME}
+EOF
+    fi
 }
 
 # =============================================================================
@@ -674,13 +713,15 @@ async function initializeDatabase() {
         const adminUser = await User.findOne({ email: 'admin@mikrotik-vpn.local' });
         if (!adminUser) {
             await User.create({
-                name: 'Admin',
+                username: 'admin',
+                name: 'Administrator',
                 email: 'admin@mikrotik-vpn.local',
                 password: 'admin123',
                 role: 'admin',
                 organization: organization._id
             });
             console.log('Created default admin user');
+            console.log('Username: admin');
             console.log('Email: admin@mikrotik-vpn.local');
             console.log('Password: admin123');
             console.log('IMPORTANT: Change this password immediately!');
@@ -742,6 +783,46 @@ start_services() {
 }
 
 # =============================================================================
+# STEP 9: Verify installation
+# =============================================================================
+verify_installation() {
+    log "Verifying installation..."
+    
+    # Check if services are running
+    local all_running=true
+    
+    for service in mongodb redis app; do
+        if docker ps | grep -q "mikrotik-$service"; then
+            log_info "✓ $service is running"
+        else
+            log_error "✗ $service is not running"
+            all_running=false
+        fi
+    done
+    
+    # Test API endpoints
+    if [ "$all_running" = true ]; then
+        sleep 5
+        
+        # Test health endpoint
+        if curl -s http://localhost:3000/health | grep -q "ok"; then
+            log_info "✓ Health check passed"
+        else
+            log_warning "✗ Health check failed"
+        fi
+        
+        # Test API endpoint
+        if curl -s http://localhost:3000/api | grep -q "MikroTik VPN Management API"; then
+            log_info "✓ API endpoint working"
+        else
+            log_warning "✗ API endpoint not responding"
+        fi
+    fi
+    
+    return 0
+}
+
+# =============================================================================
 # MAIN EXECUTION
 # =============================================================================
 main() {
@@ -772,6 +853,9 @@ main() {
     # Step 8: Start services
     start_services
     
+    # Step 9: Verify installation
+    verify_installation
+    
     log "=============================================="
     log "Diagnosis and fix completed!"
     log ""
@@ -783,9 +867,16 @@ main() {
     log "  curl http://localhost:3000/health"
     log "  curl http://localhost:3000/api"
     log ""
-    log "Default login:"
+    log "Default login credentials:"
+    log "  Username: admin"
     log "  Email: admin@mikrotik-vpn.local"
     log "  Password: admin123"
+    log ""
+    log "Management CLI:"
+    log "  mikrotik-vpn"
+    log ""
+    log "Web Interface:"
+    log "  https://${DOMAIN_NAME}"
     log ""
     log "If still having issues, check:"
     log "  1. MongoDB connection: docker logs mikrotik-mongodb"
