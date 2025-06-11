@@ -1070,13 +1070,235 @@ fix_storage_directories() {
 fix_docker_permissions() {
     log "Updating Docker container permissions..."
     
-    # Update permissions for app directory
-    docker exec mikrotik-app chown -R node:node /app
+    # First, stop the container to prevent restart loop
+    log "Stopping container to fix issues..."
+    docker stop mikrotik-app 2>/dev/null || true
     
-    # Restart app container
-    docker restart mikrotik-app
+    # Wait a moment
+    sleep 2
     
-    log "Docker permissions updated"
+    # Fix permissions directly on the host
+    chown -R 1000:1000 "$APP_DIR"
+    chmod -R 755 "$APP_DIR"
+    
+    # Start container again
+    log "Starting container..."
+    docker start mikrotik-app
+    
+    # Wait for container to be ready
+    log "Waiting for container to be ready..."
+    sleep 5
+    
+    # Check container status
+    if docker ps | grep -q mikrotik-app; then
+        log "Container is running"
+    else
+        log_error "Container failed to start. Checking logs..."
+        docker logs mikrotik-app --tail 50
+    fi
+}
+
+# =============================================================================
+# FIX 7: Check and fix application errors
+# =============================================================================
+fix_application_errors() {
+    log "Checking for application errors..."
+    
+    # Check if email utility exists and fix require statement
+    if [ ! -f "$APP_DIR/utils/email.js" ]; then
+        cat << 'EOF' > "$APP_DIR/utils/email.js"
+const logger = require('./logger');
+
+class EmailService {
+    constructor() {
+        this.transporter = null;
+    }
+
+    async sendEmail(options) {
+        logger.warn('Email service not configured');
+        return false;
+    }
+}
+
+module.exports = new EmailService();
+EOF
+    fi
+    
+    # Fix missing Organization model reference
+    if ! grep -q "const Organization" "$APP_DIR/src/mikrotik/lib/device-monitor.js"; then
+        sed -i '1a\const Organization = require('\''../../../models/Organization'\'');' "$APP_DIR/src/mikrotik/lib/device-monitor.js"
+    fi
+    
+    # Fix missing DeviceStatistics reference
+    if ! grep -q "const DeviceStatistics" "$APP_DIR/src/mikrotik/lib/device-monitor.js"; then
+        sed -i '1a\const DeviceStatistics = require('\''../../../models/DeviceStatistics'\'');' "$APP_DIR/src/mikrotik/lib/device-monitor.js"
+    fi
+    
+    # Create missing Organization model if it doesn't exist
+    if [ ! -f "$APP_DIR/models/Organization.js" ]; then
+        cat << 'EOF' > "$APP_DIR/models/Organization.js"
+const mongoose = require('mongoose');
+
+const organizationSchema = new mongoose.Schema({
+    name: {
+        type: String,
+        required: true,
+        unique: true,
+        trim: true
+    },
+    email: {
+        type: String,
+        required: true,
+        lowercase: true,
+        trim: true
+    },
+    phone: String,
+    address: {
+        street: String,
+        city: String,
+        state: String,
+        country: String,
+        postalCode: String
+    },
+    settings: {
+        timezone: {
+            type: String,
+            default: 'Asia/Bangkok'
+        },
+        currency: {
+            type: String,
+            default: 'THB'
+        },
+        language: {
+            type: String,
+            default: 'th'
+        }
+    },
+    isActive: {
+        type: Boolean,
+        default: true
+    },
+    createdBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+    }
+}, {
+    timestamps: true
+});
+
+module.exports = mongoose.model('Organization', organizationSchema);
+EOF
+        log "Organization model created"
+    fi
+    
+    # Fix server.js to handle missing routes gracefully
+    if grep -q "Phase 2 Routes" "$APP_DIR/server.js"; then
+        # Create a temporary fix for server.js
+        cat << 'EOF' > "$APP_DIR/server-phase2-routes.js"
+// Phase 2 Routes Integration
+const logger = require('./utils/logger');
+
+module.exports = function(app, io) {
+    try {
+        // Device routes
+        const deviceRoutes = require('./routes/devices');
+        app.use('/api/v1/devices', deviceRoutes);
+        logger.info('Device routes loaded');
+    } catch (error) {
+        logger.error('Failed to load device routes:', error.message);
+    }
+
+    try {
+        // Hotspot routes
+        const hotspotRoutes = require('./routes/hotspot');
+        app.use('/api/v1/hotspot', hotspotRoutes);
+        logger.info('Hotspot routes loaded');
+    } catch (error) {
+        logger.error('Failed to load hotspot routes:', error.message);
+    }
+
+    try {
+        // Voucher routes
+        const voucherRoutes = require('./routes/vouchers');
+        app.use('/api/v1/vouchers', voucherRoutes);
+        logger.info('Voucher routes loaded');
+    } catch (error) {
+        logger.error('Failed to load voucher routes:', error.message);
+    }
+
+    try {
+        // Report routes
+        const reportRoutes = require('./routes/reports');
+        app.use('/api/v1/reports', reportRoutes);
+        logger.info('Report routes loaded');
+    } catch (error) {
+        logger.error('Failed to load report routes:', error.message);
+    }
+
+    // Start device monitoring if available
+    try {
+        const DeviceMonitor = require('./src/mikrotik/lib/device-monitor');
+        const deviceMonitor = new DeviceMonitor(io);
+        
+        // Start monitoring after a delay to ensure DB is ready
+        setTimeout(() => {
+            deviceMonitor.start().catch(error => {
+                logger.error('Failed to start device monitor:', error.message);
+            });
+        }, 10000);
+        
+        logger.info('Device monitor initialized');
+    } catch (error) {
+        logger.error('Failed to initialize device monitor:', error.message);
+    }
+
+    // Schedule tasks
+    try {
+        const schedule = require('node-schedule');
+        
+        // Cleanup expired vouchers daily
+        schedule.scheduleJob('0 0 * * *', async () => {
+            try {
+                const Voucher = require('./models/Voucher');
+                const expired = await Voucher.checkExpired();
+                logger.info(`Cleaned up ${expired} expired vouchers`);
+            } catch (error) {
+                logger.error('Failed to cleanup vouchers:', error.message);
+            }
+        });
+
+        // Cleanup expired hotspot users daily
+        schedule.scheduleJob('0 1 * * *', async () => {
+            try {
+                const HotspotUser = require('./models/HotspotUser');
+                const expired = await HotspotUser.cleanupExpired();
+                logger.info(`Cleaned up ${expired} expired hotspot users`);
+            } catch (error) {
+                logger.error('Failed to cleanup hotspot users:', error.message);
+            }
+        });
+        
+        logger.info('Scheduled tasks initialized');
+    } catch (error) {
+        logger.error('Failed to initialize scheduled tasks:', error.message);
+    }
+};
+EOF
+        
+        # Update server.js to use the module
+        if ! grep -q "require('./server-phase2-routes')" "$APP_DIR/server.js"; then
+            # Remove the inline Phase 2 routes code and replace with require
+            sed -i '/\/\/ Phase 2 Routes/,/\});$/c\
+// Phase 2 Routes\
+try {\
+    require('\''./server-phase2-routes'\'')(app, io);\
+} catch (error) {\
+    logger.error('\''Failed to load Phase 2 routes:'\'', error.message);\
+}' "$APP_DIR/server.js"
+        fi
+    fi
+    
+    log "Application errors fixed"
 }
 
 # =============================================================================
@@ -1092,6 +1314,7 @@ main() {
     fix_missing_models
     fix_utils_directory
     fix_storage_directories
+    fix_application_errors  # Add this before docker permissions
     fix_docker_permissions
     
     log "=========================="
@@ -1110,6 +1333,9 @@ main() {
     log "  1. Check service status: docker ps"
     log "  2. View logs: docker logs mikrotik-app"
     log "  3. Access web interface: https://netkarn.co"
+    log ""
+    log "If the container is still restarting, check the logs with:"
+    log "  docker logs mikrotik-app --tail 100"
 }
 
 # Execute main function
