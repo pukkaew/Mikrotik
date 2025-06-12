@@ -4237,7 +4237,7 @@ services:
     volumes:
       - ./nginx/ssl:/etc/letsencrypt
       - certbot_www:/var/www/certbot
-    entrypoint: ["/bin/sh", "-c", "trap exit TERM; while :; do certbot renew; sleep 12h & wait ${!}; done;"]
+    entrypoint: ["/bin/sh", "-c", "trap exit TERM; while :; do certbot renew; sleep 12h & wait $$!; done;"]
     networks:
       - mikrotik-vpn-net
 
