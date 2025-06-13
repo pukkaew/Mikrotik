@@ -97,7 +97,8 @@ phase2_1_device_management() {
         qrcode \
         handlebars \
         puppeteer \
-        node-thermal-printer || {
+        node-thermal-printer \
+        nodemailer || {
         log_error "Failed to install npm dependencies"
         return 1
     }
