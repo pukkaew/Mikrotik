@@ -563,6 +563,7 @@ create_report_service() {
     mkdir -p "$APP_DIR/src/services"
     
     cat << 'EOF' > "$APP_DIR/src/services/reportService.js"
+const mongoose = require('mongoose');
 const Report = require('../../models/Report');
 const Device = require('../../models/Device');
 const HotspotUser = require('../../models/HotspotUser');
