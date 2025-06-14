@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # Phase 2: MikroTik Integration - Part 4: Reporting System and Integration
-# Version: 2.0
+# Version: 2.1 (Corrected)
 # Description: Complete implementation of Reporting and Phase 1 Integration
 # =============================================================================
 
@@ -199,6 +199,8 @@ reportSchema.statics.cleanupExpired = async function() {
 
 module.exports = mongoose.model('Report', reportSchema);
 EOF
+
+    log "Report model created"
 }
 
 # Create report controller
@@ -556,6 +558,8 @@ class ReportController {
 
 module.exports = new ReportController();
 EOF
+
+    log "Report controller created"
 }
 
 # Create report generation service
@@ -683,7 +687,7 @@ class ReportService {
         const revenue = await Voucher.aggregate([
             {
                 $match: {
-                    organization,
+                    organization: mongoose.Types.ObjectId(organization),
                     soldAt: { $gte: start, $lte: end },
                     'price.amount': { $gt: 0 }
                 }
@@ -1880,7 +1884,7 @@ class ReportService {
             Voucher.aggregate([
                 {
                     $match: {
-                        organization: require('mongoose').Types.ObjectId(organizationId),
+                        organization: mongoose.Types.ObjectId(organizationId),
                         soldAt: { $gte: start, $lte: end },
                         'price.amount': { $gt: 0 }
                     }
@@ -1965,6 +1969,8 @@ class ReportService {
 
 module.exports = new ReportService();
 EOF
+
+    log "Report service created"
 }
 
 # Create report templates
@@ -2225,14 +2231,114 @@ VOUCHER_VALIDITY_DAYS=30
 REPORT_RETENTION_DAYS=90
 ENCRYPTION_KEY=$(openssl rand -base64 32)
 HOTSPOT_URL=https://${DOMAIN_NAME}
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=
+SMTP_PASS=
+SMTP_FROM=noreply@${DOMAIN_NAME}
+ALERT_EMAIL=admin@${DOMAIN_NAME}
 EOF
 
     log "Docker Compose updated with Phase 2 configurations"
 }
 
+# Create routes
+create_device_routes() {
+    cat << 'EOF' > "$APP_DIR/routes/devices.js"
+const express = require('express');
+const router = express.Router();
+const deviceController = require('../controllers/deviceController');
+const { auth, authorize } = require('../middleware/auth');
+const { body, param, query } = require('express-validator');
+
+// All routes require authentication
+router.use(auth);
+
+// Device management
+router.get('/',
+    authorize('admin', 'operator', 'viewer'),
+    deviceController.getDevices.bind(deviceController)
+);
+
+router.get('/:id',
+    authorize('admin', 'operator', 'viewer'),
+    param('id').isMongoId(),
+    deviceController.getDevice.bind(deviceController)
+);
+
+router.post('/',
+    authorize('admin', 'operator'),
+    body('name').notEmpty(),
+    body('serialNumber').notEmpty(),
+    body('macAddress').matches(/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/i),
+    body('vpnIpAddress').isIP(),
+    body('apiUsername').notEmpty(),
+    body('apiPassword').notEmpty(),
+    deviceController.registerDevice.bind(deviceController)
+);
+
+router.put('/:id',
+    authorize('admin', 'operator'),
+    param('id').isMongoId(),
+    deviceController.updateDevice.bind(deviceController)
+);
+
+router.delete('/:id',
+    authorize('admin'),
+    param('id').isMongoId(),
+    deviceController.deleteDevice.bind(deviceController)
+);
+
+// Device operations
+router.post('/discover',
+    authorize('admin', 'operator'),
+    body('network').optional().matches(/^([0-9]{1,3}\.){3}[0-9]{1,3}\/[0-9]{1,2}$/),
+    deviceController.discoverDevices.bind(deviceController)
+);
+
+router.post('/:id/execute',
+    authorize('admin', 'operator'),
+    param('id').isMongoId(),
+    body('command').notEmpty(),
+    deviceController.executeCommand.bind(deviceController)
+);
+
+router.get('/:id/stats',
+    authorize('admin', 'operator', 'viewer'),
+    param('id').isMongoId(),
+    deviceController.getDeviceStats.bind(deviceController)
+);
+
+router.post('/:id/backup',
+    authorize('admin', 'operator'),
+    param('id').isMongoId(),
+    deviceController.backupDevice.bind(deviceController)
+);
+
+router.post('/:id/reboot',
+    authorize('admin'),
+    param('id').isMongoId(),
+    deviceController.rebootDevice.bind(deviceController)
+);
+
+router.post('/:id/template',
+    authorize('admin', 'operator'),
+    param('id').isMongoId(),
+    body('templateId').isMongoId(),
+    deviceController.applyTemplate.bind(deviceController)
+);
+
+module.exports = router;
+EOF
+}
+
 # Update main routes
 update_main_routes() {
     log "Updating main application routes..."
+    
+    # First, ensure device routes exist
+    create_device_routes
     
     # Create a script to update server.js
     cat << 'EOF' > "$SYSTEM_DIR/update-server-routes.js"
@@ -2438,8 +2544,8 @@ EOF
 update_management_interface() {
     log "Updating management interface..."
     
-    # Update the mikrotik-vpn CLI script
-    cat << 'EOF' >> "$SYSTEM_DIR/mikrotik-vpn"
+    # Create Phase 2 menu extension file
+    cat << 'EOF' > "$SYSTEM_DIR/mikrotik-vpn-phase2-menu"
 
 # ============================================
 # Phase 2 Menu Functions
@@ -2643,23 +2749,42 @@ voucher_management_menu() {
         *) print_colored "$RED" "Invalid option"; sleep 2; voucher_management_menu ;;
     esac
 }
-
-# Update main menu to include Phase 2 options
-# Add these menu items to the existing main_menu function
-# Add to main_menu function
-sed -i '/9\. Exit/i\
-echo "10. Device Management"\
-echo "11. Hotspot Management"\
-echo "12. Voucher Management"' "$SYSTEM_DIR/mikrotik-vpn"
-
-# Update case statement in main_menu
-sed -i '/9) exit 0 ;;/i\
-        10) device_management_menu ;;\
-        11) hotspot_management_menu ;;\
-        12) voucher_management_menu ;;' "$SYSTEM_DIR/mikrotik-vpn"
-
 EOF
 
+    # Append to main mikrotik-vpn script
+    if ! grep -q "Phase 2 Menu Functions" "$SYSTEM_DIR/mikrotik-vpn"; then
+        echo "" >> "$SYSTEM_DIR/mikrotik-vpn"
+        echo "# Include Phase 2 menu functions" >> "$SYSTEM_DIR/mikrotik-vpn"
+        echo "source /opt/mikrotik-vpn/mikrotik-vpn-phase2-menu" >> "$SYSTEM_DIR/mikrotik-vpn"
+    fi
+    
+    # Update main menu to include Phase 2 options
+    # Create a backup first
+    cp "$SYSTEM_DIR/mikrotik-vpn" "$SYSTEM_DIR/mikrotik-vpn.backup-phase2"
+    
+    # Add menu items using awk for safer editing
+    awk '
+    /echo "9\. Exit"/ {
+        print "echo \"10. Device Management\""
+        print "echo \"11. Hotspot Management\"" 
+        print "echo \"12. Voucher Management\""
+    }
+    { print }
+    ' "$SYSTEM_DIR/mikrotik-vpn.backup-phase2" > "$SYSTEM_DIR/mikrotik-vpn.tmp"
+    
+    # Update case statement
+    awk '
+    /9\) exit 0 ;;/ {
+        print "        10) device_management_menu ;;"
+        print "        11) hotspot_management_menu ;;"
+        print "        12) voucher_management_menu ;;"
+    }
+    { print }
+    ' "$SYSTEM_DIR/mikrotik-vpn.tmp" > "$SYSTEM_DIR/mikrotik-vpn"
+    
+    rm "$SYSTEM_DIR/mikrotik-vpn.tmp"
+    chmod +x "$SYSTEM_DIR/mikrotik-vpn"
+    
     log "Management interface updated with Phase 2 features"
 }
 
@@ -2751,6 +2876,12 @@ main() {
         exit 1
     fi
     
+    # Check if required directories exist
+    if [[ ! -d "$APP_DIR" ]]; then
+        log_error "Application directory not found. Please ensure Phase 2 Part 1-3 are completed."
+        exit 1
+    fi
+    
     # Execute Phase 2.4
     phase2_4_basic_reporting || {
         log_error "Phase 2.4 failed"
@@ -2763,12 +2894,24 @@ main() {
         exit 1
     }
     
+    # Create storage directory for reports
+    mkdir -p "$APP_DIR/storage/reports"
+    chmod 755 "$APP_DIR/storage/reports"
+    
     # Restart services
     log "Restarting services with Phase 2 components..."
     cd "$SYSTEM_DIR"
-    docker compose restart app || {
-        log_warning "Failed to restart app service"
-    }
+    
+    # Check if docker compose command exists
+    if command -v docker-compose &> /dev/null; then
+        docker-compose restart app || {
+            log_warning "Failed to restart app service"
+        }
+    else
+        docker compose restart app || {
+            log_warning "Failed to restart app service"
+        }
+    fi
     
     log "======================================"
     log "Phase 2 Part 4 completed successfully!"
@@ -2800,6 +2943,11 @@ main() {
     log "- Password: admin123"
     log ""
     log "IMPORTANT: Change the default password immediately!"
+    log ""
+    log "To configure email notifications:"
+    log "1. Edit /opt/mikrotik-vpn/.env"
+    log "2. Add SMTP configuration"
+    log "3. Restart the application"
     log ""
     log "Next: Phase 3 - Business Features (Payment Gateway, Captive Portal, etc.)"
 }
