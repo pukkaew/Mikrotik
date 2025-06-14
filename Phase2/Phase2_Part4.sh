@@ -1880,7 +1880,7 @@ class ReportService {
             Voucher.aggregate([
                 {
                     $match: {
-                        organization: mongoose.Types.ObjectId(organizationId),
+                        organization: require('mongoose').Types.ObjectId(organizationId),
                         soldAt: { $gte: start, $lte: end },
                         'price.amount': { $gt: 0 }
                     }
@@ -2646,6 +2646,18 @@ voucher_management_menu() {
 
 # Update main menu to include Phase 2 options
 # Add these menu items to the existing main_menu function
+# Add to main_menu function
+sed -i '/echo "9. Exit"/i\
+echo "10. Device Management"\
+echo "11. Hotspot Management"\
+echo "12. Voucher Management"' "$SYSTEM_DIR/mikrotik-vpn"
+
+# Update case statement in main_menu
+sed -i '/9) exit 0 ;;/i\
+        10) device_management_menu ;;\
+        11) hotspot_management_menu ;;\
+        12) voucher_management_menu ;;' "$SYSTEM_DIR/mikrotik-vpn"
+
 EOF
 
     log "Management interface updated with Phase 2 features"
