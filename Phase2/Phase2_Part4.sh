@@ -2647,7 +2647,7 @@ voucher_management_menu() {
 # Update main menu to include Phase 2 options
 # Add these menu items to the existing main_menu function
 # Add to main_menu function
-sed -i '/echo "9. Exit"/i\
+sed -i '/9\. Exit/i\
 echo "10. Device Management"\
 echo "11. Hotspot Management"\
 echo "12. Voucher Management"' "$SYSTEM_DIR/mikrotik-vpn"
