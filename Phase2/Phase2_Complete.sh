@@ -95,6 +95,12 @@ check_prerequisites() {
         exit 1
     fi
     
+    # Check JWT_SECRET and SESSION_SECRET
+    if [[ -z "${JWT_SECRET:-}" ]] || [[ -z "${SESSION_SECRET:-}" ]]; then
+        log_error "Required secrets (JWT_SECRET/SESSION_SECRET) not found in configuration."
+        exit 1
+    fi
+    
     log "Prerequisites check passed!"
 }
 
