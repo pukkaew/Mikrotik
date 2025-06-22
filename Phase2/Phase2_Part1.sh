@@ -2063,16 +2063,91 @@ class DeviceController {
 
 module.exports = new DeviceController();
 EOF
-} {
-                // Device is online
+}
+
+# Create device monitoring service
+create_device_monitoring_service() {
+    cat << 'EOF' > "$APP_DIR/src/mikrotik/lib/device-monitor.js"
+const EventEmitter = require('events');
+const Device = require('../../../models/Device');
+const MikroTikAPI = require('./mikrotik-api');
+const logger = require('../../../utils/logger');
+const { sendAlert } = require('../../../utils/notifications');
+const crypto = require('crypto');
+
+class DeviceMonitor extends EventEmitter {
+    constructor(io) {
+        super();
+        this.io = io;
+        this.monitors = new Map();
+        this.alerts = new Map();
+        this.checkInterval = 60000; // 1 minute
+        this.statisticsInterval = 3600000; // 1 hour
+        this.healthReportInterval = 86400000; // 24 hours
+        
+        // Initialize encryption key
+        this.ENCRYPTION_KEY = crypto.scryptSync(
+            process.env.ENCRYPTION_KEY || 'default-key', 
+            'salt', 
+            32
+        );
+    }
+
+    start() {
+        logger.info('Starting device monitoring service...');
+        
+        // Initial check
+        this.checkAllDevices();
+        
+        // Regular monitoring
+        setInterval(() => this.checkAllDevices(), this.checkInterval);
+        
+        // Statistics collection
+        setInterval(() => this.collectStatistics(), this.statisticsInterval);
+        
+        // Daily health report
+        setInterval(() => this.generateHealthReport(), this.healthReportInterval);
+    }
+
+    async checkAllDevices() {
+        try {
+            const devices = await Device.find({ isActive: true });
+            
+            for (const device of devices) {
+                this.checkDevice(device);
+            }
+        } catch (error) {
+            logger.error(`Failed to check devices: ${error.message}`);
+        }
+    }
+
+    async checkDevice(device) {
+        try {
+            const isOnline = await this.pingDevice(device.vpnIpAddress);
+            
+            if (isOnline) {
                 await this.handleDeviceOnline(device);
             } else {
-                // Device is offline
                 await this.handleDeviceOffline(device);
             }
         } catch (error) {
             logger.error(`Failed to check device ${device.name}: ${error.message}`);
             await this.handleDeviceError(device, error);
+        }
+    }
+
+    async pingDevice(ipAddress) {
+        const ping = require('ping');
+        
+        try {
+            const result = await ping.promise.probe(ipAddress, {
+                timeout: 2,
+                min_reply: 1
+            });
+            
+            return result.alive;
+        } catch (error) {
+            return false;
         }
     }
 
@@ -2409,6 +2484,7 @@ EOF
                     );
                     if (deviceAlert) {
                         deviceAlert.resolved = true;
+                        deviceAlert.resolvedAt = new Date();
                     }
                 }
             }
@@ -2551,7 +2627,4 @@ EOF
 }
 
 module.exports = DeviceMonitor;
-EOFMONITOR
-}
 EOF
-}
