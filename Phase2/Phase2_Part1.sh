@@ -77,6 +77,7 @@ phase2_1_device_management() {
     mkdir -p "$APP_DIR/controllers"
     mkdir -p "$APP_DIR/routes"
     mkdir -p "$APP_DIR/models"
+    mkdir -p "$APP_DIR/middleware"
     
     # Install MikroTik specific dependencies
     cd "$APP_DIR"
@@ -98,10 +99,17 @@ phase2_1_device_management() {
         handlebars \
         puppeteer \
         node-thermal-printer \
-        nodemailer || {
+        nodemailer \
+        winston || {
         log_error "Failed to install npm dependencies"
         return 1
     }
+    
+    # Create auth middleware first
+    create_auth_middleware
+    
+    # Create User model if not exists
+    create_user_model
     
     # Create Device model
     create_device_model
@@ -124,7 +132,255 @@ phase2_1_device_management() {
     # Create MikroTik script templates
     create_mikrotik_templates
     
+    # Create device routes
+    create_device_routes
+    
     log "Phase 2.1 completed!"
+}
+
+# Create auth middleware
+create_auth_middleware() {
+    cat << 'EOF' > "$APP_DIR/middleware/auth.js"
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+
+const auth = async (req, res, next) => {
+    try {
+        const token = req.header('Authorization')?.replace('Bearer ', '');
+        
+        if (!token) {
+            throw new Error();
+        }
+        
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+        const user = await User.findOne({ 
+            _id: decoded._id, 
+            isActive: true 
+        }).select('-password');
+        
+        if (!user) {
+            throw new Error();
+        }
+        
+        req.user = user;
+        req.token = token;
+        next();
+    } catch (error) {
+        res.status(401).json({ 
+            success: false,
+            error: 'Please authenticate' 
+        });
+    }
+};
+
+const authorize = (...roles) => {
+    return (req, res, next) => {
+        if (!roles.includes(req.user.role)) {
+            return res.status(403).json({ 
+                success: false,
+                error: 'Access denied. Insufficient permissions.' 
+            });
+        }
+        next();
+    };
+};
+
+module.exports = { auth, authorize };
+EOF
+}
+
+# Create User model
+create_user_model() {
+    cat << 'EOF' > "$APP_DIR/models/User.js"
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+
+const userSchema = new mongoose.Schema({
+    username: {
+        type: String,
+        required: true,
+        unique: true,
+        trim: true,
+        lowercase: true,
+        minlength: 3
+    },
+    email: {
+        type: String,
+        required: true,
+        unique: true,
+        trim: true,
+        lowercase: true
+    },
+    password: {
+        type: String,
+        required: true,
+        minlength: 6
+    },
+    firstName: {
+        type: String,
+        trim: true
+    },
+    lastName: {
+        type: String,
+        trim: true
+    },
+    organization: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Organization',
+        required: true
+    },
+    role: {
+        type: String,
+        enum: ['super_admin', 'admin', 'operator', 'viewer'],
+        default: 'operator'
+    },
+    permissions: [{
+        resource: String,
+        actions: [String]
+    }],
+    isActive: {
+        type: Boolean,
+        default: true
+    },
+    lastLogin: Date,
+    loginAttempts: {
+        type: Number,
+        default: 0
+    },
+    lockUntil: Date,
+    passwordResetToken: String,
+    passwordResetExpires: Date,
+    emailVerified: {
+        type: Boolean,
+        default: false
+    },
+    emailVerificationToken: String,
+    twoFactorSecret: String,
+    twoFactorEnabled: {
+        type: Boolean,
+        default: false
+    },
+    apiKeys: [{
+        key: String,
+        name: String,
+        createdAt: Date,
+        lastUsed: Date,
+        isActive: Boolean
+    }],
+    preferences: {
+        language: {
+            type: String,
+            default: 'en'
+        },
+        timezone: {
+            type: String,
+            default: 'Asia/Bangkok'
+        },
+        notifications: {
+            email: {
+                type: Boolean,
+                default: true
+            },
+            sms: {
+                type: Boolean,
+                default: false
+            }
+        }
+    }
+}, {
+    timestamps: true
+});
+
+// Indexes
+userSchema.index({ email: 1 });
+userSchema.index({ username: 1 });
+userSchema.index({ organization: 1 });
+
+// Virtual for full name
+userSchema.virtual('fullName').get(function() {
+    return `${this.firstName || ''} ${this.lastName || ''}`.trim();
+});
+
+// Hash password before saving
+userSchema.pre('save', async function(next) {
+    if (!this.isModified('password')) return next();
+    
+    try {
+        const salt = await bcrypt.genSalt(10);
+        this.password = await bcrypt.hash(this.password, salt);
+        next();
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Compare password
+userSchema.methods.comparePassword = async function(candidatePassword) {
+    return bcrypt.compare(candidatePassword, this.password);
+};
+
+// Generate JWT token
+userSchema.methods.generateAuthToken = function() {
+    const token = jwt.sign(
+        { 
+            _id: this._id,
+            organization: this.organization,
+            role: this.role 
+        },
+        process.env.JWT_SECRET || 'your-secret-key',
+        { expiresIn: '7d' }
+    );
+    return token;
+};
+
+// Check if account is locked
+userSchema.methods.isLocked = function() {
+    return !!(this.lockUntil && this.lockUntil > Date.now());
+};
+
+// Increment login attempts
+userSchema.methods.incLoginAttempts = function() {
+    // Reset attempts if lock has expired
+    if (this.lockUntil && this.lockUntil < Date.now()) {
+        return this.updateOne({
+            $set: { loginAttempts: 1 },
+            $unset: { lockUntil: 1 }
+        });
+    }
+    
+    const updates = { $inc: { loginAttempts: 1 } };
+    const maxAttempts = 5;
+    const lockTime = 2 * 60 * 60 * 1000; // 2 hours
+    
+    if (this.loginAttempts + 1 >= maxAttempts && !this.isLocked()) {
+        updates.$set = { lockUntil: Date.now() + lockTime };
+    }
+    
+    return this.updateOne(updates);
+};
+
+// Reset login attempts
+userSchema.methods.resetLoginAttempts = function() {
+    return this.updateOne({
+        $set: { loginAttempts: 0 },
+        $unset: { lockUntil: 1 }
+    });
+};
+
+// Hide sensitive data
+userSchema.methods.toJSON = function() {
+    const user = this.toObject();
+    delete user.password;
+    delete user.twoFactorSecret;
+    delete user.passwordResetToken;
+    delete user.emailVerificationToken;
+    delete user.apiKeys;
+    return user;
+};
+
+module.exports = mongoose.model('User', userSchema);
+EOF
 }
 
 # Create Device model
@@ -2408,495 +2664,3 @@ class DeviceMonitor extends EventEmitter {
 }
 
 module.exports = DeviceMonitor;
-EOF
-}
-
-# Create MikroTik script templates
-create_mikrotik_templates() {
-    # Hotspot setup template
-    cat << 'EOF' > "$APP_DIR/src/mikrotik/templates/hotspot-setup.rsc"
-# MikroTik Hotspot Setup Template
-# Generated by MikroTik VPN Management System
-
-# Set identity
-/system identity set name="{{DEVICE_NAME}}"
-
-# Configure hotspot interface
-/interface bridge
-add name=bridge-hotspot comment="Hotspot Bridge"
-
-# Add hotspot interfaces to bridge
-/interface bridge port
-add bridge=bridge-hotspot interface={{HOTSPOT_INTERFACE}}
-
-# Configure IP address for hotspot
-/ip address
-add address={{HOTSPOT_IP}}/24 interface=bridge-hotspot
-
-# Configure DHCP server
-/ip pool
-add name=hotspot-pool ranges={{DHCP_RANGE}}
-
-/ip dhcp-server
-add address-pool=hotspot-pool disabled=no interface=bridge-hotspot name=hotspot-dhcp
-
-/ip dhcp-server network
-add address={{HOTSPOT_NETWORK}}/24 gateway={{HOTSPOT_IP}} dns-server=8.8.8.8,8.8.4.4
-
-# Configure hotspot
-/ip hotspot profile
-add dns-name={{HOTSPOT_DNS_NAME}} hotspot-address={{HOTSPOT_IP}} name={{PROFILE_NAME}} \
-    login-by=cookie,http-chap,trial use-radius=no
-
-/ip hotspot
-add address-pool=hotspot-pool disabled=no interface=bridge-hotspot name={{HOTSPOT_NAME}} \
-    profile={{PROFILE_NAME}}
-
-# Configure hotspot user profile
-/ip hotspot user profile
-add name="default" shared-users=1 rate-limit="2M/2M"
-add name="premium" shared-users=1 rate-limit="5M/5M"
-add name="vip" shared-users=2 rate-limit="10M/10M"
-
-# Configure firewall for hotspot
-/ip firewall filter
-add chain=input action=accept protocol=tcp dst-port=80,443,8291 src-address={{HOTSPOT_NETWORK}}/24 \
-    comment="Allow hotspot management"
-add chain=forward action=accept src-address={{HOTSPOT_NETWORK}}/24 out-interface={{WAN_INTERFACE}} \
-    comment="Allow hotspot to internet"
-
-# Configure NAT
-/ip firewall nat
-add chain=srcnat action=masquerade src-address={{HOTSPOT_NETWORK}}/24 out-interface={{WAN_INTERFACE}} \
-    comment="Hotspot NAT"
-
-# Configure walled garden (optional)
-/ip hotspot walled-garden
-add dst-host="*.google.com" comment="Allow Google"
-add dst-host="*.facebook.com" comment="Allow Facebook"
-
-# Configure hotspot pages
-/ip hotspot profile
-set [find name={{PROFILE_NAME}}] \
-    html-directory=flash/hotspot \
-    login-by=cookie,http-chap,trial
-
-# Create default trial user
-/ip hotspot user
-add name="trial" profile="default" limit-uptime=30m comment="30-minute trial"
-
-# Configure logging
-/system logging
-add topics=hotspot,info action=memory
-add topics=hotspot,error action=memory
-
-print "Hotspot setup completed successfully!"
-EOF
-
-    # VPN client setup template
-    cat << 'EOF' > "$APP_DIR/src/mikrotik/templates/vpn-client-setup.rsc"
-# MikroTik VPN Client Setup Template
-# Connect to Management VPN Server
-
-# Configure L2TP client
-/interface l2tp-client
-add connect-to={{VPN_SERVER}} name=vpn-mgmt user={{VPN_USER}} \
-    password={{VPN_PASSWORD}} profile=default-encryption \
-    add-default-route=no disabled=no comment="Management VPN"
-
-# Wait for connection
-:delay 5s
-
-# Add route to management network
-/ip route
-add dst-address={{MGMT_NETWORK}}/24 gateway=vpn-mgmt
-
-# Configure firewall to allow management access
-/ip firewall filter
-add chain=input action=accept protocol=tcp dst-port=8728,8729,80,443,22 \
-    src-address={{MGMT_NETWORK}}/24 comment="Allow management access"
-
-# Enable API service
-/ip service
-set api disabled=no port=8728
-set api-ssl disabled=no port=8729 certificate=api-ssl
-
-# Configure API user
-/user
-add name={{API_USER}} password={{API_PASSWORD}} group=full \
-    comment="API user for management system"
-
-# Configure scheduled keepalive
-/system scheduler
-add name=vpn-keepalive interval=1m on-event="/ping {{VPN_SERVER}} count=3" \
-    comment="Keep VPN connection alive"
-
-print "VPN client setup completed successfully!"
-EOF
-
-    # Bandwidth management template
-    cat << 'EOF' > "$APP_DIR/src/mikrotik/templates/bandwidth-management.rsc"
-# MikroTik Bandwidth Management Template
-# Configure QoS and bandwidth limits
-
-# Create mangle rules for traffic marking
-/ip firewall mangle
-add chain=forward action=mark-connection new-connection-mark=hotspot-conn \
-    src-address={{HOTSPOT_NETWORK}}/24 passthrough=yes comment="Mark hotspot connections"
-add chain=forward action=mark-packet new-packet-mark=hotspot-packet \
-    connection-mark=hotspot-conn passthrough=no comment="Mark hotspot packets"
-
-# Create PCQ types for fair bandwidth distribution
-/queue type
-add name=pcq-download kind=pcq pcq-classifier=dst-address pcq-rate={{DOWNLOAD_RATE}}
-add name=pcq-upload kind=pcq pcq-classifier=src-address pcq-rate={{UPLOAD_RATE}}
-
-# Create queue tree for bandwidth management
-/queue tree
-add name=download parent=global packet-mark=hotspot-packet queue=pcq-download \
-    max-limit={{TOTAL_DOWNLOAD}} comment="Total download bandwidth"
-add name=upload parent=global packet-mark=hotspot-packet queue=pcq-upload \
-    max-limit={{TOTAL_UPLOAD}} comment="Total upload bandwidth"
-
-# Create simple queues for user profiles
-/queue simple
-add name="default-profile" target={{HOTSPOT_NETWORK}}/24 \
-    max-limit={{DEFAULT_UP}}/{{DEFAULT_DOWN}} burst-limit={{DEFAULT_BURST_UP}}/{{DEFAULT_BURST_DOWN}} \
-    burst-time=10s/10s burst-threshold={{DEFAULT_THRESHOLD_UP}}/{{DEFAULT_THRESHOLD_DOWN}} \
-    comment="Default user profile limits"
-
-# Configure queue priorities
-/queue tree
-add name=priority-high parent=download packet-mark=priority-high priority=1 queue=default
-add name=priority-normal parent=download packet-mark=priority-normal priority=4 queue=default
-add name=priority-low parent=download packet-mark=priority-low priority=8 queue=default
-
-print "Bandwidth management configured successfully!"
-EOF
-
-    # Security hardening template
-    cat << 'EOF' > "$APP_DIR/src/mikrotik/templates/security-hardening.rsc"
-# MikroTik Security Hardening Template
-# Implement security best practices
-
-# Disable unnecessary services
-/ip service
-set telnet disabled=yes
-set ftp disabled=yes
-set www disabled=yes
-set ssh port=22222 disabled=no
-set api disabled=no address={{MGMT_NETWORK}}/24
-set api-ssl disabled=no address={{MGMT_NETWORK}}/24 certificate=api-ssl
-set winbox disabled=no address={{MGMT_NETWORK}}/24
-
-# Configure strong passwords policy
-/user
-set [find name=admin] password={{ADMIN_PASSWORD}}
-
-# Remove default user if exists
-/user remove [find name=admin !default]
-
-# Configure firewall - Input chain
-/ip firewall filter
-add chain=input action=accept connection-state=established,related \
-    comment="Accept established/related"
-add chain=input action=accept protocol=icmp comment="Accept ICMP"
-add chain=input action=accept dst-port=8728,8729,22222 protocol=tcp \
-    src-address={{MGMT_NETWORK}}/24 comment="Accept management"
-add chain=input action=accept in-interface=bridge-hotspot dst-port=53 protocol=udp \
-    comment="Accept DNS from hotspot"
-add chain=input action=drop comment="Drop everything else"
-
-# Configure firewall - Forward chain
-/ip firewall filter
-add chain=forward action=accept connection-state=established,related \
-    comment="Accept established/related"
-add chain=forward action=accept src-address={{HOTSPOT_NETWORK}}/24 \
-    out-interface={{WAN_INTERFACE}} comment="Allow hotspot to internet"
-add chain=forward action=drop connection-state=invalid comment="Drop invalid"
-add chain=forward action=drop comment="Drop everything else"
-
-# Configure port knocking (optional)
-/ip firewall filter
-add chain=input action=add-src-to-address-list address-list=knock-step1 \
-    address-list-timeout=10s dst-port=1111 protocol=tcp comment="Port knock step 1"
-add chain=input action=add-src-to-address-list address-list=knock-step2 \
-    address-list-timeout=10s dst-port=2222 protocol=tcp src-address-list=knock-step1
-add chain=input action=add-src-to-address-list address-list=secure-access \
-    address-list-timeout=1h dst-port=3333 protocol=tcp src-address-list=knock-step2
-add chain=input action=accept dst-port=8291 protocol=tcp src-address-list=secure-access \
-    comment="Allow WinBox after port knocking"
-
-# Configure DDoS protection
-/ip firewall filter
-add chain=input action=drop connection-limit=50,32 protocol=tcp comment="Limit connections"
-add chain=input action=drop src-address-list=blacklist comment="Drop blacklisted"
-add chain=input action=add-src-to-address-list address-list=blacklist \
-    address-list-timeout=1d connection-state=new connection-limit=100,32 protocol=tcp \
-    comment="Blacklist excessive connections"
-
-# Enable secure neighbor discovery
-/ip neighbor discovery-settings
-set discover-interface-list=none
-
-# Configure NTP
-/system ntp client
-set enabled=yes server-dns-names=pool.ntp.org
-
-# Configure logging
-/system logging
-add topics=firewall,warning action=memory
-add topics=system,error,critical action=memory
-
-print "Security hardening completed successfully!"
-EOF
-
-    log "MikroTik templates created"
-}
-
-# Create additional models that will be needed
-create_device_statistics_model() {
-    cat << 'EOF' > "$APP_DIR/models/DeviceStatistics.js"
-const mongoose = require('mongoose');
-
-const deviceStatisticsSchema = new mongoose.Schema({
-    device: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Device',
-        required: true,
-        index: true
-    },
-    timestamp: {
-        type: Date,
-        default: Date.now,
-        index: true
-    },
-    system: {
-        cpuLoad: Number,
-        memoryUsage: Number,
-        diskUsage: Number,
-        temperature: Number,
-        uptime: String
-    },
-    traffic: {
-        bytesIn: Number,
-        bytesOut: Number,
-        packetsIn: Number,
-        packetsOut: Number,
-        errors: Number
-    },
-    hotspot: {
-        activeUsers: Number,
-        totalSessions: Number
-    },
-    interfaces: [{
-        name: String,
-        status: String,
-        rxBytes: Number,
-        txBytes: Number,
-        rxErrors: Number,
-        txErrors: Number
-    }]
-}, {
-    timestamps: false
-});
-
-// Indexes for efficient queries
-deviceStatisticsSchema.index({ device: 1, timestamp: -1 });
-deviceStatisticsSchema.index({ timestamp: 1 }, { expireAfterSeconds: 2592000 }); // 30 days
-
-module.exports = mongoose.model('DeviceStatistics', deviceStatisticsSchema);
-EOF
-}
-
-# Create ConfigTemplate model
-create_config_template_model() {
-    cat << 'EOF' > "$APP_DIR/models/ConfigTemplate.js"
-const mongoose = require('mongoose');
-
-const configTemplateSchema = new mongoose.Schema({
-    organization: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Organization',
-        required: true,
-        index: true
-    },
-    name: {
-        type: String,
-        required: true,
-        trim: true
-    },
-    description: String,
-    type: {
-        type: String,
-        enum: ['hotspot', 'vpn', 'firewall', 'qos', 'general'],
-        required: true
-    },
-    commands: [{
-        order: Number,
-        command: String,
-        params: mongoose.Schema.Types.Mixed,
-        description: String
-    }],
-    variables: [{
-        name: String,
-        description: String,
-        type: {
-            type: String,
-            enum: ['string', 'number', 'ip', 'network', 'interface']
-        },
-        defaultValue: mongoose.Schema.Types.Mixed,
-        required: Boolean
-    }],
-    tags: [String],
-    isActive: {
-        type: Boolean,
-        default: true
-    },
-    createdBy: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true
-    }
-}, {
-    timestamps: true
-});
-
-module.exports = mongoose.model('ConfigTemplate', configTemplateSchema);
-EOF
-}
-
-# Create utils/logger.js if not exists
-create_logger_util() {
-    mkdir -p "$APP_DIR/utils"
-    
-    cat << 'EOF' > "$APP_DIR/utils/logger.js"
-const winston = require('winston');
-const path = require('path');
-
-const logger = winston.createLogger({
-    level: process.env.LOG_LEVEL || 'info',
-    format: winston.format.combine(
-        winston.format.timestamp(),
-        winston.format.errors({ stack: true }),
-        winston.format.splat(),
-        winston.format.json()
-    ),
-    defaultMeta: { service: 'mikrotik-vpn' },
-    transports: [
-        new winston.transports.Console({
-            format: winston.format.combine(
-                winston.format.colorize(),
-                winston.format.simple()
-            )
-        }),
-        new winston.transports.File({ 
-            filename: path.join('/var/log/mikrotik-vpn', 'error.log'), 
-            level: 'error' 
-        }),
-        new winston.transports.File({ 
-            filename: path.join('/var/log/mikrotik-vpn', 'combined.log') 
-        })
-    ]
-});
-
-module.exports = logger;
-EOF
-}
-
-# Create utils/alerts.js
-create_alerts_util() {
-    cat << 'EOF' > "$APP_DIR/utils/alerts.js"
-const logger = require('./logger');
-
-async function sendAlert(alert) {
-    try {
-        // Log the alert
-        logger.warn('Alert:', alert);
-        
-        // TODO: Implement actual alert sending (email, Slack, etc.)
-        // For now, just log it
-        
-        // Email implementation placeholder
-        if (process.env.ALERT_EMAIL_ENABLED === 'true') {
-            // const emailService = require('./email');
-            // await emailService.sendAlert(alert);
-        }
-        
-        // Slack implementation placeholder
-        if (process.env.SLACK_WEBHOOK_URL) {
-            // const { IncomingWebhook } = require('@slack/webhook');
-            // const webhook = new IncomingWebhook(process.env.SLACK_WEBHOOK_URL);
-            // await webhook.send({
-            //     text: `Alert: ${alert.message}`,
-            //     attachments: [{
-            //         color: alert.type === 'critical' ? 'danger' : 'warning',
-            //         fields: [
-            //             { title: 'Device', value: alert.device, short: true },
-            //             { title: 'Type', value: alert.type, short: true },
-            //             { title: 'Time', value: alert.timestamp, short: true }
-            //         ]
-            //     }]
-            // });
-        }
-        
-        return true;
-    } catch (error) {
-        logger.error('Failed to send alert:', error);
-        return false;
-    }
-}
-
-module.exports = { sendAlert };
-EOF
-}
-
-# =============================================================================
-# MAIN EXECUTION
-# =============================================================================
-
-main() {
-    log "Starting Phase 2 Part 1: Core Setup and Device Management"
-    log "======================================================"
-    
-    # Check prerequisites
-    if [[ ! -d "$SYSTEM_DIR" ]]; then
-        log_error "Phase 1 not completed. Please run Phase 1 installation first."
-        exit 1
-    fi
-    
-    # Check if Docker is running
-    if ! docker ps &>/dev/null; then
-        log_error "Docker is not running. Please start Docker first."
-        exit 1
-    fi
-    
-    # Create necessary utils
-    create_logger_util
-    create_alerts_util
-    
-    # Create additional models
-    create_device_statistics_model
-    create_config_template_model
-    
-    # Execute Phase 2.1
-    phase2_1_device_management || {
-        log_error "Phase 2.1 failed"
-        exit 1
-    }
-    
-    log "======================================"
-    log "Phase 2 Part 1 completed successfully!"
-    log ""
-    log "Device Management components installed:"
-    log "- MikroTik API wrapper"
-    log "- Device discovery service"
-    log "- Device controller"
-    log "- Device monitoring service"
-    log "- MikroTik script templates"
-    log ""
-    log "Continue with Part 2 for Hotspot Management..."
-}
-
-# Execute main function
-main "$@"
