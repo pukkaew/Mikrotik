@@ -2463,6 +2463,19 @@ main() {
     log "Starting Phase 2 Part 2: Hotspot and User Management"
     log "===================================================="
     
+    # Create necessary directories
+    mkdir -p "$APP_DIR/services" \
+             "$APP_DIR/jobs" \
+             "$APP_DIR/src/mikrotik/lib" \
+             "$APP_DIR/utils" \
+             "$APP_DIR/routes" \
+             "$APP_DIR/controllers" \
+             "$APP_DIR/models"
+    
+    # Create necessary files if they don't exist
+    [ -f "$APP_DIR/app.js" ] || touch "$APP_DIR/app.js"
+    [ -f "$APP_DIR/server.js" ] || touch "$APP_DIR/server.js"
+    
     # Check prerequisites
     if [[ ! -d "$SYSTEM_DIR" ]]; then
         log_error "Phase 1 not completed. Please run Phase 1 installation first."
