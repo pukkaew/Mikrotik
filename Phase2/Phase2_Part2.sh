@@ -86,6 +86,7 @@ const Device = require('../models/Device');
 const MikroTikAPI = require('../src/mikrotik/lib/mikrotik-api');
 const logger = require('../utils/logger');
 const { validationResult } = require('express-validator');
+const bcrypt = require('bcryptjs');
 
 class HotspotController {
     // Get all hotspot users
@@ -756,8 +757,8 @@ class HotspotController {
     }
 
     hashPassword(password) {
-        const crypto = require('crypto');
-        return crypto.createHash('sha256').update(password).digest('hex');
+        // Using bcryptjs instead of crypto for better security
+        return bcrypt.hashSync(password, 10);
     }
 
     generatePassword(length = 8) {
