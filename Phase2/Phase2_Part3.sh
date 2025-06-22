@@ -1422,7 +1422,7 @@ EOF
     log "Voucher templates created"
 }
 
-# Create voucher printing service
+# Create voucher printing service (with recommended improvement)
 create_voucher_printing_service() {
     cat << 'EOF' > "$APP_DIR/src/services/voucherPrintService.js"
 const fs = require('fs').promises;
@@ -1457,6 +1457,13 @@ class VoucherPrintService {
     }
 
     async generatePDF(vouchers, options = {}) {
+        // Limit batch size to prevent memory issues
+        const BATCH_SIZE = 100;
+        if (vouchers.length > BATCH_SIZE) {
+            console.warn(`Large batch detected: ${vouchers.length} vouchers. Processing first ${BATCH_SIZE} vouchers.`);
+            vouchers = vouchers.slice(0, BATCH_SIZE);
+        }
+
         const template = this.templates.get(options.template || 'default');
         if (!template) {
             throw new Error('Template not found');
