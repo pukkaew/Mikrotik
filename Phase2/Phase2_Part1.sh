@@ -2063,121 +2063,7 @@ class DeviceController {
 
 module.exports = new DeviceController();
 EOF
-}
-
-# Create device monitoring service  
-create_device_monitoring_service() {
-    cat << 'EOF' > "$APP_DIR/src/mikrotik/lib/device-monitor.js"
-const EventEmitter = require('events');
-const schedule = require('node-schedule');
-const Device = require('../../../models/Device');
-const MikroTikAPI = require('./mikrotik-api');
-const logger = require('../../../utils/logger');
-const { sendAlert } = require('../../../utils/alerts');
-const crypto = require('crypto');
-
-class DeviceMonitor extends EventEmitter {
-    constructor(io) {
-        super();
-        this.io = io;
-        this.monitors = new Map();
-        this.alerts = new Map();
-        this.checkInterval = 60000; // 1 minute
-        this.isRunning = false;
-        // Initialize encryption key
-        this.ENCRYPTION_KEY = crypto.scryptSync(
-            process.env.ENCRYPTION_KEY || 'default-key', 
-            'salt', 
-            32
-        );
-    }
-
-    async start() {
-        if (this.isRunning) {
-            logger.warn('Device monitor is already running');
-            return;
-        }
-
-        this.isRunning = true;
-        logger.info('Starting device monitor...');
-
-        // Initial check
-        await this.checkAllDevices();
-
-        // Schedule regular checks
-        this.scheduleJob = schedule.scheduleJob('*/1 * * * *', async () => {
-            await this.checkAllDevices();
-        });
-
-        // Schedule hourly statistics collection
-        this.statsJob = schedule.scheduleJob('0 * * * *', async () => {
-            await this.collectStatistics();
-        });
-
-        // Schedule daily health report
-        this.reportJob = schedule.scheduleJob('0 8 * * *', async () => {
-            await this.generateHealthReport();
-        });
-
-        this.emit('started');
-    }
-
-    async stop() {
-        if (!this.isRunning) {
-            return;
-        }
-
-        this.isRunning = false;
-        logger.info('Stopping device monitor...');
-
-        // Cancel scheduled jobs
-        if (this.scheduleJob) {
-            this.scheduleJob.cancel();
-        }
-        if (this.statsJob) {
-            this.statsJob.cancel();
-        }
-        if (this.reportJob) {
-            this.reportJob.cancel();
-        }
-
-        // Disconnect all monitors
-        for (const [deviceId, monitor] of this.monitors) {
-            if (monitor.api) {
-                await monitor.api.disconnect();
-            }
-        }
-
-        this.monitors.clear();
-        this.alerts.clear();
-
-        this.emit('stopped');
-    }
-
-    async checkAllDevices() {
-        try {
-            const devices = await Device.find({ isActive: true });
-            
-            for (const device of devices) {
-                await this.checkDevice(device);
-            }
-        } catch (error) {
-            logger.error(`Failed to check devices: ${error.message}`);
-        }
-    }
-
-    async checkDevice(device) {
-        const deviceId = device._id.toString();
-        
-        try {
-            // Check if device is reachable
-            const ping = require('ping');
-            const pingResult = await ping.promise.probe(device.vpnIpAddress, {
-                timeout: 5,
-                min_reply: 1
-            });
-
-            if (pingResult.alive) {
+} {
                 // Device is online
                 await this.handleDeviceOnline(device);
             } else {
@@ -2277,7 +2163,7 @@ class DeviceMonitor extends EventEmitter {
             this.alerts.set(deviceId, alert);
 
             // Send immediate notification for critical devices
-            if (device.tags.includes('critical')) {
+            if (device.tags && device.tags.includes('critical')) {
                 await sendAlert(alert);
                 alert.notificationSent = true;
             } else {
