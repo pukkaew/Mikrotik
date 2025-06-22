@@ -74,6 +74,15 @@ phase2_2_hotspot_management() {
     # Create activity log model
     create_activity_log_model
     
+    # Create hotspot services
+    create_hotspot_services
+    
+    # Create hotspot utilities
+    create_hotspot_utilities
+    
+    # Update MikroTik API for hotspot
+    update_mikrotik_api_hotspot
+    
     log "Phase 2.2 completed!"
 }
 
@@ -1581,6 +1590,750 @@ module.exports = mongoose.model('ActivityLog', activityLogSchema);
 EOF
 }
 
+# Create hotspot services
+create_hotspot_services() {
+    log "Creating hotspot services..."
+    
+    # Create hotspot service
+    cat << 'EOF' > "$APP_DIR/services/hotspotService.js"
+const HotspotUser = require('../models/HotspotUser');
+const HotspotSession = require('../models/HotspotSession');
+const Device = require('../models/Device');
+const logger = require('../utils/logger');
+const EventEmitter = require('events');
+
+class HotspotService extends EventEmitter {
+    constructor() {
+        super();
+        this.sessionCheckInterval = null;
+        this.sessionTimeout = 300000; // 5 minutes
+    }
+
+    // Start session monitoring
+    startSessionMonitoring() {
+        if (this.sessionCheckInterval) {
+            clearInterval(this.sessionCheckInterval);
+        }
+
+        this.sessionCheckInterval = setInterval(async () => {
+            try {
+                await this.checkActiveSessions();
+                await this.syncSessionsWithDevices();
+            } catch (error) {
+                logger.error('Session monitoring error:', error);
+            }
+        }, 60000); // Check every minute
+
+        logger.info('Hotspot session monitoring started');
+    }
+
+    // Stop session monitoring
+    stopSessionMonitoring() {
+        if (this.sessionCheckInterval) {
+            clearInterval(this.sessionCheckInterval);
+            this.sessionCheckInterval = null;
+        }
+        logger.info('Hotspot session monitoring stopped');
+    }
+
+    // Check active sessions
+    async checkActiveSessions() {
+        const staleSessions = await HotspotSession.find({
+            status: 'active',
+            updatedAt: { $lt: new Date(Date.now() - this.sessionTimeout) }
+        });
+
+        for (const session of staleSessions) {
+            await session.close(null, 'timeout');
+            this.emit('sessionTimeout', session);
+        }
+    }
+
+    // Sync sessions with devices
+    async syncSessionsWithDevices() {
+        const onlineDevices = await Device.find({ status: 'online' });
+
+        for (const device of onlineDevices) {
+            try {
+                await this.syncDeviceSessions(device);
+            } catch (error) {
+                logger.error(`Failed to sync sessions for device ${device.name}:`, error);
+            }
+        }
+    }
+
+    // Sync sessions for a specific device
+    async syncDeviceSessions(device) {
+        const deviceController = require('../controllers/deviceController');
+        const api = await deviceController.getDeviceConnection(device);
+
+        // Get active sessions from MikroTik
+        const mikrotikSessions = await api.getHotspotActive();
+        const mikrotikSessionIds = mikrotikSessions.map(s => s['.id']);
+
+        // Get active sessions from database
+        const dbSessions = await HotspotSession.find({
+            device: device._id,
+            status: 'active'
+        });
+
+        // Check for closed sessions
+        for (const dbSession of dbSessions) {
+            if (!mikrotikSessionIds.includes(dbSession.sessionId)) {
+                // Session no longer active in MikroTik
+                const mikrotikSession = mikrotikSessions.find(
+                    s => s.user === dbSession.username
+                );
+
+                if (mikrotikSession) {
+                    await dbSession.close({
+                        bytesIn: parseInt(mikrotikSession['bytes-in'] || 0),
+                        bytesOut: parseInt(mikrotikSession['bytes-out'] || 0),
+                        packetsIn: parseInt(mikrotikSession['packets-in'] || 0),
+                        packetsOut: parseInt(mikrotikSession['packets-out'] || 0)
+                    }, 'normal');
+                } else {
+                    await dbSession.close(null, 'device-disconnected');
+                }
+
+                this.emit('sessionClosed', dbSession);
+            }
+        }
+
+        // Check for new sessions
+        for (const mikrotikSession of mikrotikSessions) {
+            const existingSession = dbSessions.find(
+                s => s.sessionId === mikrotikSession['.id']
+            );
+
+            if (!existingSession) {
+                // New session in MikroTik
+                await this.createSessionFromMikrotik(device, mikrotikSession);
+            }
+        }
+    }
+
+    // Create session from MikroTik data
+    async createSessionFromMikrotik(device, mikrotikSession) {
+        const user = await HotspotUser.findOne({
+            device: device._id,
+            username: mikrotikSession.user.toLowerCase()
+        });
+
+        if (!user) {
+            logger.warn(`User ${mikrotikSession.user} not found for session`);
+            return;
+        }
+
+        const session = await HotspotSession.create({
+            organization: device.organization,
+            device: device._id,
+            user: user._id,
+            sessionId: mikrotikSession['.id'],
+            username: user.username,
+            macAddress: mikrotikSession['mac-address'],
+            ipAddress: mikrotikSession.address,
+            nasIpAddress: device.ipAddress,
+            startTime: new Date(Date.now() - this.parseUptime(mikrotikSession.uptime)),
+            status: 'active'
+        });
+
+        this.emit('sessionCreated', session);
+        return session;
+    }
+
+    // Parse MikroTik uptime format
+    parseUptime(uptime) {
+        const regex = /(\d+)([dhms])/g;
+        let totalMs = 0;
+        let match;
+
+        while ((match = regex.exec(uptime)) !== null) {
+            const value = parseInt(match[1]);
+            const unit = match[2];
+
+            switch (unit) {
+                case 'd': totalMs += value * 86400000; break;
+                case 'h': totalMs += value * 3600000; break;
+                case 'm': totalMs += value * 60000; break;
+                case 's': totalMs += value * 1000; break;
+            }
+        }
+
+        return totalMs;
+    }
+
+    // Get user statistics
+    async getUserStatistics(userId, startDate, endDate) {
+        const sessions = await HotspotSession.find({
+            user: userId,
+            startTime: {
+                $gte: startDate || new Date(0),
+                $lte: endDate || new Date()
+            }
+        });
+
+        const stats = {
+            totalSessions: sessions.length,
+            totalDuration: 0,
+            totalBytesIn: 0,
+            totalBytesOut: 0,
+            totalBytes: 0,
+            activeSessions: 0,
+            lastSession: null
+        };
+
+        sessions.forEach(session => {
+            stats.totalDuration += session.duration || 0;
+            stats.totalBytesIn += session.traffic.bytesIn || 0;
+            stats.totalBytesOut += session.traffic.bytesOut || 0;
+            
+            if (session.status === 'active') {
+                stats.activeSessions++;
+            }
+            
+            if (!stats.lastSession || session.startTime > stats.lastSession.startTime) {
+                stats.lastSession = session;
+            }
+        });
+
+        stats.totalBytes = stats.totalBytesIn + stats.totalBytesOut;
+
+        return stats;
+    }
+
+    // Get device statistics
+    async getDeviceStatistics(deviceId, startDate, endDate) {
+        return HotspotSession.getStatistics(
+            deviceId,
+            startDate || new Date(0),
+            endDate || new Date()
+        );
+    }
+
+    // Cleanup expired users
+    async cleanupExpiredUsers() {
+        const count = await HotspotUser.cleanupExpired();
+        logger.info(`Cleaned up ${count} expired hotspot users`);
+        return count;
+    }
+
+    // Generate usage report
+    async generateUsageReport(organizationId, startDate, endDate) {
+        const pipeline = [
+            {
+                $match: {
+                    organization: organizationId,
+                    startTime: {
+                        $gte: startDate,
+                        $lte: endDate
+                    }
+                }
+            },
+            {
+                $lookup: {
+                    from: 'hotspotusers',
+                    localField: 'user',
+                    foreignField: '_id',
+                    as: 'userInfo'
+                }
+            },
+            {
+                $unwind: '$userInfo'
+            },
+            {
+                $lookup: {
+                    from: 'devices',
+                    localField: 'device',
+                    foreignField: '_id',
+                    as: 'deviceInfo'
+                }
+            },
+            {
+                $unwind: '$deviceInfo'
+            },
+            {
+                $group: {
+                    _id: {
+                        date: { $dateToString: { format: '%Y-%m-%d', date: '$startTime' } },
+                        device: '$deviceInfo.name'
+                    },
+                    sessions: { $sum: 1 },
+                    uniqueUsers: { $addToSet: '$user' },
+                    totalDuration: { $sum: '$duration' },
+                    totalBytesIn: { $sum: '$traffic.bytesIn' },
+                    totalBytesOut: { $sum: '$traffic.bytesOut' }
+                }
+            },
+            {
+                $project: {
+                    _id: 0,
+                    date: '$_id.date',
+                    device: '$_id.device',
+                    sessions: 1,
+                    uniqueUsers: { $size: '$uniqueUsers' },
+                    totalDuration: 1,
+                    totalBytesIn: 1,
+                    totalBytesOut: 1,
+                    totalBytes: { $add: ['$totalBytesIn', '$totalBytesOut'] }
+                }
+            },
+            {
+                $sort: { date: -1, device: 1 }
+            }
+        ];
+
+        return HotspotSession.aggregate(pipeline);
+    }
+}
+
+module.exports = new HotspotService();
+EOF
+
+    # Create session cleanup job
+    cat << 'EOF' > "$APP_DIR/jobs/sessionCleanup.js"
+const cron = require('node-cron');
+const HotspotSession = require('../models/HotspotSession');
+const HotspotUser = require('../models/HotspotUser');
+const logger = require('../utils/logger');
+
+class SessionCleanupJob {
+    constructor() {
+        this.job = null;
+    }
+
+    start() {
+        // Run every hour
+        this.job = cron.schedule('0 * * * *', async () => {
+            logger.info('Starting session cleanup job');
+            
+            try {
+                // Close stale active sessions
+                await this.closeStaleActiveSessions();
+                
+                // Cleanup expired users
+                await this.cleanupExpiredUsers();
+                
+                // Archive old sessions
+                await this.archiveOldSessions();
+                
+                logger.info('Session cleanup job completed');
+            } catch (error) {
+                logger.error('Session cleanup job failed:', error);
+            }
+        });
+
+        logger.info('Session cleanup job scheduled');
+    }
+
+    stop() {
+        if (this.job) {
+            this.job.stop();
+            this.job = null;
+        }
+        logger.info('Session cleanup job stopped');
+    }
+
+    async closeStaleActiveSessions() {
+        const staleTimeout = 6 * 60 * 60 * 1000; // 6 hours
+        const staleSessions = await HotspotSession.find({
+            status: 'active',
+            updatedAt: { $lt: new Date(Date.now() - staleTimeout) }
+        });
+
+        let count = 0;
+        for (const session of staleSessions) {
+            await session.close(null, 'timeout-cleanup');
+            count++;
+        }
+
+        if (count > 0) {
+            logger.info(`Closed ${count} stale active sessions`);
+        }
+    }
+
+    async cleanupExpiredUsers() {
+        const count = await HotspotUser.cleanupExpired();
+        if (count > 0) {
+            logger.info(`Marked ${count} users as expired`);
+        }
+    }
+
+    async archiveOldSessions() {
+        // Archive sessions older than 90 days
+        const archiveDate = new Date();
+        archiveDate.setDate(archiveDate.getDate() - 90);
+
+        const oldSessions = await HotspotSession.find({
+            endTime: { $lt: archiveDate }
+        }).limit(1000); // Process in batches
+
+        if (oldSessions.length > 0) {
+            // Here you could move to archive collection or external storage
+            // For now, we'll just log
+            logger.info(`Found ${oldSessions.length} sessions ready for archiving`);
+        }
+    }
+}
+
+module.exports = new SessionCleanupJob();
+EOF
+}
+
+# Create hotspot utilities
+create_hotspot_utilities() {
+    log "Creating hotspot utilities..."
+    
+    # Create voucher generator utility
+    cat << 'EOF' > "$APP_DIR/utils/voucherGenerator.js"
+const crypto = require('crypto');
+
+class VoucherGenerator {
+    constructor() {
+        this.defaultFormat = 'XXXX-XXXX-XXXX';
+        this.characters = {
+            'X': 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+            'N': '0123456789',
+            'A': 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        };
+    }
+
+    // Generate single voucher code
+    generate(format = this.defaultFormat) {
+        let code = '';
+        
+        for (const char of format) {
+            if (this.characters[char]) {
+                const chars = this.characters[char];
+                code += chars.charAt(Math.floor(Math.random() * chars.length));
+            } else {
+                code += char;
+            }
+        }
+        
+        return code;
+    }
+
+    // Generate multiple unique codes
+    generateBatch(count, format = this.defaultFormat) {
+        const codes = new Set();
+        
+        while (codes.size < count) {
+            codes.add(this.generate(format));
+        }
+        
+        return Array.from(codes);
+    }
+
+    // Generate secure code
+    generateSecure(length = 16) {
+        const bytes = crypto.randomBytes(Math.ceil(length * 0.75));
+        return bytes.toString('base64')
+            .slice(0, length)
+            .replace(/\+/g, '0')
+            .replace(/\//g, '1');
+    }
+
+    // Generate QR code data
+    generateQRData(username, password, ssid, authType = 'WPA') {
+        // WiFi QR code format
+        return `WIFI:T:${authType};S:${ssid};P:${password};H:false;;`;
+    }
+
+    // Generate human-friendly code
+    generateFriendly(wordCount = 3) {
+        const adjectives = [
+            'happy', 'sunny', 'blue', 'green', 'swift', 'calm', 'bright', 'cool'
+        ];
+        const nouns = [
+            'ocean', 'mountain', 'river', 'forest', 'cloud', 'star', 'moon', 'sun'
+        ];
+        const numbers = Math.floor(Math.random() * 9999);
+        
+        const words = [];
+        for (let i = 0; i < wordCount - 1; i++) {
+            words.push(adjectives[Math.floor(Math.random() * adjectives.length)]);
+        }
+        words.push(nouns[Math.floor(Math.random() * nouns.length)]);
+        words.push(numbers);
+        
+        return words.join('-');
+    }
+
+    // Validate voucher format
+    validateFormat(code, format) {
+        if (code.length !== format.length) return false;
+        
+        for (let i = 0; i < format.length; i++) {
+            const formatChar = format[i];
+            const codeChar = code[i];
+            
+            if (this.characters[formatChar]) {
+                if (!this.characters[formatChar].includes(codeChar)) {
+                    return false;
+                }
+            } else if (formatChar !== codeChar) {
+                return false;
+            }
+        }
+        
+        return true;
+    }
+}
+
+module.exports = new VoucherGenerator();
+EOF
+
+    # Create bandwidth calculator utility
+    cat << 'EOF' > "$APP_DIR/utils/bandwidthCalculator.js"
+class BandwidthCalculator {
+    constructor() {
+        this.units = {
+            'b': 1,
+            'k': 1000,
+            'K': 1024,
+            'm': 1000000,
+            'M': 1048576,
+            'g': 1000000000,
+            'G': 1073741824
+        };
+    }
+
+    // Parse bandwidth string (e.g., "2M", "512k")
+    parse(bandwidthStr) {
+        const match = bandwidthStr.match(/^(\d+(?:\.\d+)?)\s*([bkKmMgG])?$/);
+        if (!match) return null;
+        
+        const value = parseFloat(match[1]);
+        const unit = match[2] || 'b';
+        
+        return value * (this.units[unit] || 1);
+    }
+
+    // Format bytes to human readable
+    format(bytes, binary = true) {
+        const divisor = binary ? 1024 : 1000;
+        const units = binary ? ['B', 'KiB', 'MiB', 'GiB', 'TiB'] : ['B', 'KB', 'MB', 'GB', 'TB'];
+        
+        let value = bytes;
+        let unitIndex = 0;
+        
+        while (value >= divisor && unitIndex < units.length - 1) {
+            value /= divisor;
+            unitIndex++;
+        }
+        
+        return `${value.toFixed(2)} ${units[unitIndex]}`;
+    }
+
+    // Calculate time to download/upload
+    calculateTime(bytes, bandwidthBps) {
+        const seconds = bytes / bandwidthBps;
+        
+        if (seconds < 60) return `${Math.round(seconds)}s`;
+        if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+        if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+        return `${Math.round(seconds / 86400)}d`;
+    }
+
+    // Parse MikroTik rate limit format (e.g., "2M/2M")
+    parseRateLimit(rateLimit) {
+        const parts = rateLimit.split('/');
+        return {
+            upload: this.parse(parts[0]),
+            download: this.parse(parts[1] || parts[0])
+        };
+    }
+
+    // Calculate usage percentage
+    calculateUsagePercentage(used, total) {
+        if (!total || total === 0) return 0;
+        return Math.min(100, (used / total) * 100);
+    }
+
+    // Estimate remaining time based on current usage
+    estimateRemainingTime(remainingBytes, averageBps) {
+        if (!averageBps || averageBps === 0) return Infinity;
+        return this.calculateTime(remainingBytes, averageBps);
+    }
+}
+
+module.exports = new BandwidthCalculator();
+EOF
+}
+
+# Update MikroTik API for hotspot
+update_mikrotik_api_hotspot() {
+    log "Updating MikroTik API for hotspot support..."
+    
+    # Add hotspot methods to MikroTik API
+    cat << 'EOF' >> "$APP_DIR/src/mikrotik/lib/mikrotik-api.js"
+
+// Hotspot API Methods
+class HotspotAPI {
+    constructor(connection) {
+        this.connection = connection;
+    }
+
+    // Get hotspot users
+    async getUsers() {
+        return this.connection.write('/ip/hotspot/user/print');
+    }
+
+    // Get specific user
+    async getUser(username) {
+        return this.connection.write('/ip/hotspot/user/print', {
+            where: { name: username }
+        });
+    }
+
+    // Add hotspot user
+    async addUser(params) {
+        const userData = {
+            name: params.username,
+            password: params.password,
+            profile: params.profile || 'default'
+        };
+
+        if (params.macAddress) userData['mac-address'] = params.macAddress;
+        if (params.limitUptime) userData['limit-uptime'] = params.limitUptime;
+        if (params.limitBytesTotal) userData['limit-bytes-total'] = params.limitBytesTotal;
+        if (params.comment) userData.comment = params.comment;
+
+        return this.connection.write('/ip/hotspot/user/add', userData);
+    }
+
+    // Update hotspot user
+    async updateUser(username, updates) {
+        const user = await this.getUser(username);
+        if (!user || user.length === 0) {
+            throw new Error('User not found');
+        }
+
+        return this.connection.write('/ip/hotspot/user/set', {
+            '.id': user[0]['.id'],
+            ...updates
+        });
+    }
+
+    // Remove hotspot user
+    async removeUser(username) {
+        const user = await this.getUser(username);
+        if (!user || user.length === 0) {
+            throw new Error('User not found');
+        }
+
+        return this.connection.write('/ip/hotspot/user/remove', {
+            '.id': user[0]['.id']
+        });
+    }
+
+    // Get active hotspot sessions
+    async getActiveSessions() {
+        return this.connection.write('/ip/hotspot/active/print');
+    }
+
+    // Disconnect hotspot user
+    async disconnectUser(sessionId) {
+        return this.connection.write('/ip/hotspot/active/remove', {
+            '.id': sessionId
+        });
+    }
+
+    // Get hotspot profiles
+    async getProfiles() {
+        return this.connection.write('/ip/hotspot/user/profile/print');
+    }
+
+    // Add hotspot profile
+    async addProfile(params) {
+        return this.connection.write('/ip/hotspot/user/profile/add', params);
+    }
+
+    // Get hotspot server info
+    async getServers() {
+        return this.connection.write('/ip/hotspot/print');
+    }
+
+    // Get hotspot hosts
+    async getHosts() {
+        return this.connection.write('/ip/hotspot/host/print');
+    }
+
+    // Get hotspot cookies
+    async getCookies() {
+        return this.connection.write('/ip/hotspot/cookie/print');
+    }
+
+    // Get IP bindings
+    async getBindings() {
+        return this.connection.write('/ip/hotspot/ip-binding/print');
+    }
+
+    // Add IP binding
+    async addBinding(params) {
+        return this.connection.write('/ip/hotspot/ip-binding/add', params);
+    }
+
+    // Get walled garden
+    async getWalledGarden() {
+        return this.connection.write('/ip/hotspot/walled-garden/print');
+    }
+
+    // Add walled garden entry
+    async addWalledGarden(params) {
+        return this.connection.write('/ip/hotspot/walled-garden/add', params);
+    }
+}
+
+// Extend main API class
+MikroTikAPI.prototype.getHotspotUsers = async function() {
+    const hotspot = new HotspotAPI(this);
+    return hotspot.getUsers();
+};
+
+MikroTikAPI.prototype.getHotspotUser = async function(username) {
+    const hotspot = new HotspotAPI(this);
+    return hotspot.getUser(username);
+};
+
+MikroTikAPI.prototype.addHotspotUser = async function(params) {
+    const hotspot = new HotspotAPI(this);
+    return hotspot.addUser(params);
+};
+
+MikroTikAPI.prototype.updateHotspotUser = async function(username, updates) {
+    const hotspot = new HotspotAPI(this);
+    return hotspot.updateUser(username, updates);
+};
+
+MikroTikAPI.prototype.removeHotspotUser = async function(username) {
+    const hotspot = new HotspotAPI(this);
+    return hotspot.removeUser(username);
+};
+
+MikroTikAPI.prototype.getHotspotActive = async function() {
+    const hotspot = new HotspotAPI(this);
+    return hotspot.getActiveSessions();
+};
+
+MikroTikAPI.prototype.disconnectHotspotUser = async function(sessionId) {
+    const hotspot = new HotspotAPI(this);
+    return hotspot.disconnectUser(sessionId);
+};
+
+MikroTikAPI.prototype.getHotspotProfiles = async function() {
+    const hotspot = new HotspotAPI(this);
+    return hotspot.getProfiles();
+};
+
+MikroTikAPI.prototype.addHotspotProfile = async function(params) {
+    const hotspot = new HotspotAPI(this);
+    return hotspot.addProfile(params);
+};
+EOF
+}
+
 # Create hotspot routes
 create_hotspot_routes() {
     cat << 'EOF' > "$APP_DIR/routes/hotspot.js"
@@ -1685,6 +2438,15 @@ module.exports = router;
 EOF
 }
 
+# Update app.js to include hotspot routes
+update_app_routes() {
+    log "Updating app.js to include hotspot routes..."
+    
+    # Add hotspot routes to app.js
+    sed -i "/\/\/ API Routes/a\
+app.use('/api/hotspot', require('./routes/hotspot'));" "$APP_DIR/app.js"
+}
+
 # =============================================================================
 # MAIN EXECUTION
 # =============================================================================
@@ -1708,16 +2470,58 @@ main() {
     # Create routes
     create_hotspot_routes
     
+    # Update app.js
+    update_app_routes
+    
+    # Start services
+    log "Starting hotspot services..."
+    cd "$APP_DIR"
+    
+    # Import hotspot service in server
+    cat << 'EOF' >> "$APP_DIR/server.js"
+
+// Start hotspot service monitoring
+const hotspotService = require('./services/hotspotService');
+hotspotService.startSessionMonitoring();
+
+// Start session cleanup job
+const sessionCleanupJob = require('./jobs/sessionCleanup');
+sessionCleanupJob.start();
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    hotspotService.stopSessionMonitoring();
+    sessionCleanupJob.stop();
+});
+EOF
+    
     log "======================================"
     log "Phase 2 Part 2 completed successfully!"
     log ""
     log "Hotspot Management components installed:"
     log "- Hotspot user management"
     log "- Hotspot profile management"
-    log "- Session tracking"
+    log "- Session tracking and monitoring"
     log "- Activity logging"
     log "- Bulk user creation"
     log "- CSV export functionality"
+    log "- Voucher generation utilities"
+    log "- Bandwidth calculation utilities"
+    log "- Automated session cleanup"
+    log ""
+    log "API Endpoints:"
+    log "- GET    /api/hotspot/users"
+    log "- POST   /api/hotspot/users"
+    log "- PUT    /api/hotspot/users/:id"
+    log "- DELETE /api/hotspot/users/:id"
+    log "- POST   /api/hotspot/users/bulk"
+    log "- GET    /api/hotspot/users/export/csv"
+    log "- GET    /api/hotspot/sessions/active"
+    log "- POST   /api/hotspot/sessions/:deviceId/:sessionId/disconnect"
+    log "- GET    /api/hotspot/profiles"
+    log "- POST   /api/hotspot/profiles"
+    log "- PUT    /api/hotspot/profiles/:id"
+    log "- DELETE /api/hotspot/profiles/:id"
     log ""
     log "Continue with Part 3 for Voucher System..."
 }
