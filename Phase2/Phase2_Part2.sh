@@ -1477,7 +1477,7 @@ hotspotSessionSchema.statics.getStatistics = async function(organizationId, star
     const pipeline = [
         {
             $match: {
-                organization: mongoose.Types.ObjectId(organizationId),
+                organization: new mongoose.Types.ObjectId(organizationId),
                 startTime: {
                     $gte: startDate,
                     $lte: endDate
@@ -2442,9 +2442,17 @@ EOF
 update_app_routes() {
     log "Updating app.js to include hotspot routes..."
     
-    # Add hotspot routes to app.js
-    sed -i "/\/\/ API Routes/a\
+    # Check if API Routes section exists
+    if grep -q "// API Routes" "$APP_DIR/app.js"; then
+        # Add hotspot routes to app.js
+        sed -i "/\/\/ API Routes/a\
 app.use('/api/hotspot', require('./routes/hotspot'));" "$APP_DIR/app.js"
+    else
+        # Add at the end before module.exports
+        sed -i "/module.exports = app/i\
+\n// Hotspot routes\
+app.use('/api/hotspot', require('./routes/hotspot'));\n" "$APP_DIR/app.js"
+    fi
 }
 
 # =============================================================================
