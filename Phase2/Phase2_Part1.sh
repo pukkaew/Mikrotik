@@ -99,23 +99,22 @@ phase2_1_device_management() {
         handlebars \
         puppeteer \
         node-thermal-printer \
-        nodemailer \
-        winston || {
+        nodemailer || {
         log_error "Failed to install npm dependencies"
         return 1
     }
     
-    # Create auth middleware first
+    # Create middleware first
     create_auth_middleware
-    
-    # Create User model if not exists
-    create_user_model
     
     # Create Device model
     create_device_model
     
     # Create Organization model if not exists
     create_organization_model
+    
+    # Create User model if not exists
+    create_user_model
     
     # Create MikroTik API wrapper
     create_mikrotik_api_wrapper
@@ -132,9 +131,6 @@ phase2_1_device_management() {
     # Create MikroTik script templates
     create_mikrotik_templates
     
-    # Create device routes
-    create_device_routes
-    
     log "Phase 2.1 completed!"
 }
 
@@ -147,29 +143,21 @@ const User = require('../models/User');
 const auth = async (req, res, next) => {
     try {
         const token = req.header('Authorization')?.replace('Bearer ', '');
+        if (!token) throw new Error();
         
-        if (!token) {
-            throw new Error();
-        }
-        
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-jwt-secret');
         const user = await User.findOne({ 
             _id: decoded._id, 
             isActive: true 
         }).select('-password');
         
-        if (!user) {
-            throw new Error();
-        }
+        if (!user) throw new Error();
         
         req.user = user;
         req.token = token;
         next();
     } catch (error) {
-        res.status(401).json({ 
-            success: false,
-            error: 'Please authenticate' 
-        });
+        res.status(401).json({ error: 'Please authenticate' });
     }
 };
 
@@ -177,7 +165,6 @@ const authorize = (...roles) => {
     return (req, res, next) => {
         if (!roles.includes(req.user.role)) {
             return res.status(403).json({ 
-                success: false,
                 error: 'Access denied. Insufficient permissions.' 
             });
         }
@@ -202,49 +189,59 @@ const userSchema = new mongoose.Schema({
         required: true,
         unique: true,
         trim: true,
-        lowercase: true,
-        minlength: 3
+        lowercase: true
     },
     email: {
         type: String,
         required: true,
         unique: true,
-        trim: true,
-        lowercase: true
+        lowercase: true,
+        trim: true
     },
     password: {
         type: String,
         required: true,
         minlength: 6
     },
-    firstName: {
-        type: String,
-        trim: true
+    name: {
+        first: String,
+        last: String
     },
-    lastName: {
+    role: {
         type: String,
-        trim: true
+        enum: ['admin', 'operator', 'viewer'],
+        default: 'operator'
     },
     organization: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Organization',
         required: true
     },
-    role: {
-        type: String,
-        enum: ['super_admin', 'admin', 'operator', 'viewer'],
-        default: 'operator'
-    },
-    permissions: [{
-        resource: String,
-        actions: [String]
-    }],
-    isActive: {
-        type: Boolean,
-        default: true
+    phone: String,
+    avatar: String,
+    settings: {
+        notifications: {
+            email: {
+                type: Boolean,
+                default: true
+            },
+            sms: {
+                type: Boolean,
+                default: false
+            }
+        },
+        theme: {
+            type: String,
+            default: 'light'
+        },
+        language: {
+            type: String,
+            default: 'en'
+        }
     },
     lastLogin: Date,
-    loginAttempts: {
+    lastLoginIP: String,
+    failedLoginAttempts: {
         type: Number,
         default: 0
     },
@@ -256,82 +253,58 @@ const userSchema = new mongoose.Schema({
         default: false
     },
     emailVerificationToken: String,
-    twoFactorSecret: String,
-    twoFactorEnabled: {
+    isActive: {
         type: Boolean,
-        default: false
+        default: true
     },
-    apiKeys: [{
-        key: String,
-        name: String,
-        createdAt: Date,
-        lastUsed: Date,
-        isActive: Boolean
-    }],
-    preferences: {
-        language: {
+    tokens: [{
+        token: {
             type: String,
-            default: 'en'
+            required: true
         },
-        timezone: {
-            type: String,
-            default: 'Asia/Bangkok'
-        },
-        notifications: {
-            email: {
-                type: Boolean,
-                default: true
-            },
-            sms: {
-                type: Boolean,
-                default: false
-            }
+        createdAt: {
+            type: Date,
+            default: Date.now
         }
-    }
+    }]
 }, {
     timestamps: true
 });
 
-// Indexes
-userSchema.index({ email: 1 });
-userSchema.index({ username: 1 });
-userSchema.index({ organization: 1 });
-
 // Virtual for full name
 userSchema.virtual('fullName').get(function() {
-    return `${this.firstName || ''} ${this.lastName || ''}`.trim();
+    return `${this.name.first || ''} ${this.name.last || ''}`.trim();
 });
 
 // Hash password before saving
 userSchema.pre('save', async function(next) {
-    if (!this.isModified('password')) return next();
+    const user = this;
     
-    try {
-        const salt = await bcrypt.genSalt(10);
-        this.password = await bcrypt.hash(this.password, salt);
-        next();
-    } catch (error) {
-        next(error);
+    if (user.isModified('password')) {
+        user.password = await bcrypt.hash(user.password, 8);
     }
+    
+    next();
 });
 
-// Compare password
-userSchema.methods.comparePassword = async function(candidatePassword) {
-    return bcrypt.compare(candidatePassword, this.password);
-};
-
-// Generate JWT token
-userSchema.methods.generateAuthToken = function() {
+// Generate auth token
+userSchema.methods.generateAuthToken = async function() {
+    const user = this;
     const token = jwt.sign(
-        { 
-            _id: this._id,
-            organization: this.organization,
-            role: this.role 
-        },
-        process.env.JWT_SECRET || 'your-secret-key',
+        { _id: user._id.toString(), role: user.role }, 
+        process.env.JWT_SECRET || 'your-jwt-secret',
         { expiresIn: '7d' }
     );
+    
+    user.tokens = user.tokens.concat({ token });
+    await user.save();
+    
     return token;
+};
+
+// Check password
+userSchema.methods.checkPassword = async function(password) {
+    return bcrypt.compare(password, this.password);
 };
 
 // Check if account is locked
@@ -340,42 +313,60 @@ userSchema.methods.isLocked = function() {
 };
 
 // Increment login attempts
-userSchema.methods.incLoginAttempts = function() {
+userSchema.methods.incLoginAttempts = async function() {
     // Reset attempts if lock has expired
     if (this.lockUntil && this.lockUntil < Date.now()) {
         return this.updateOne({
-            $set: { loginAttempts: 1 },
+            $set: { failedLoginAttempts: 1 },
             $unset: { lockUntil: 1 }
         });
     }
     
-    const updates = { $inc: { loginAttempts: 1 } };
+    const updates = { $inc: { failedLoginAttempts: 1 } };
     const maxAttempts = 5;
     const lockTime = 2 * 60 * 60 * 1000; // 2 hours
     
-    if (this.loginAttempts + 1 >= maxAttempts && !this.isLocked()) {
-        updates.$set = { lockUntil: Date.now() + lockTime };
+    if (this.failedLoginAttempts + 1 >= maxAttempts && !this.isLocked()) {
+        updates.$set = { lockUntil: new Date(Date.now() + lockTime) };
     }
     
     return this.updateOne(updates);
 };
 
 // Reset login attempts
-userSchema.methods.resetLoginAttempts = function() {
+userSchema.methods.resetLoginAttempts = async function() {
     return this.updateOne({
-        $set: { loginAttempts: 0 },
+        $set: { failedLoginAttempts: 0 },
         $unset: { lockUntil: 1 }
     });
 };
 
-// Hide sensitive data
-userSchema.methods.toJSON = function() {
-    const user = this.toObject();
-    delete user.password;
-    delete user.twoFactorSecret;
-    delete user.passwordResetToken;
-    delete user.emailVerificationToken;
-    delete user.apiKeys;
+// Statics
+userSchema.statics.findByCredentials = async function(username, password) {
+    const user = await this.findOne({ 
+        $or: [{ username }, { email: username }],
+        isActive: true
+    }).populate('organization');
+    
+    if (!user) {
+        throw new Error('Invalid credentials');
+    }
+    
+    if (user.isLocked()) {
+        throw new Error('Account is locked. Please try again later.');
+    }
+    
+    const isPasswordMatch = await user.checkPassword(password);
+    
+    if (!isPasswordMatch) {
+        await user.incLoginAttempts();
+        throw new Error('Invalid credentials');
+    }
+    
+    if (user.failedLoginAttempts > 0) {
+        await user.resetLoginAttempts();
+    }
+    
     return user;
 };
 
@@ -1437,7 +1428,7 @@ module.exports = DeviceDiscovery;
 EOF
 }
 
-# Create device management controller
+# Create device management controller (with encryption key fix)
 create_device_management_controller() {
     cat << 'EOF' > "$APP_DIR/controllers/deviceController.js"
 const Device = require('../models/Device');
@@ -1445,11 +1436,18 @@ const MikroTikAPI = require('../src/mikrotik/lib/mikrotik-api');
 const DeviceDiscovery = require('../src/mikrotik/lib/device-discovery');
 const logger = require('../utils/logger');
 const { validationResult } = require('express-validator');
+const crypto = require('crypto');
 
 class DeviceController {
     constructor() {
         this.connections = new Map();
         this.discovery = new DeviceDiscovery();
+        // Initialize encryption key
+        this.ENCRYPTION_KEY = crypto.scryptSync(
+            process.env.ENCRYPTION_KEY || 'default-key', 
+            'salt', 
+            32
+        );
     }
 
     // Get all devices for organization
@@ -2029,13 +2027,10 @@ class DeviceController {
     }
 
     encryptPassword(password) {
-        // TODO: Implement proper encryption
-        const crypto = require('crypto');
         const algorithm = 'aes-256-cbc';
-        const key = crypto.scryptSync(process.env.ENCRYPTION_KEY || 'default-key', 'salt', 32);
         const iv = crypto.randomBytes(16);
         
-        const cipher = crypto.createCipheriv(algorithm, key, iv);
+        const cipher = crypto.createCipheriv(algorithm, this.ENCRYPTION_KEY, iv);
         let encrypted = cipher.update(password, 'utf8', 'hex');
         encrypted += cipher.final('hex');
         
@@ -2043,16 +2038,13 @@ class DeviceController {
     }
 
     decryptPassword(encryptedPassword) {
-        // Implement proper decryption
-        const crypto = require('crypto');
         const algorithm = 'aes-256-cbc';
-        const key = crypto.scryptSync(process.env.ENCRYPTION_KEY || 'default-key', 'salt', 32);
         
         try {
             const [ivHex, encrypted] = encryptedPassword.split(':');
             const iv = Buffer.from(ivHex, 'hex');
             
-            const decipher = crypto.createDecipheriv(algorithm, key, iv);
+            const decipher = crypto.createDecipheriv(algorithm, this.ENCRYPTION_KEY, iv);
             let decrypted = decipher.update(encrypted, 'hex', 'utf8');
             decrypted += decipher.final('utf8');
             
@@ -2077,6 +2069,7 @@ const Device = require('../../../models/Device');
 const MikroTikAPI = require('./mikrotik-api');
 const logger = require('../../../utils/logger');
 const { sendAlert } = require('../../../utils/alerts');
+const crypto = require('crypto');
 
 class DeviceMonitor extends EventEmitter {
     constructor(io) {
@@ -2086,6 +2079,12 @@ class DeviceMonitor extends EventEmitter {
         this.alerts = new Map();
         this.checkInterval = 60000; // 1 minute
         this.isRunning = false;
+        // Initialize encryption key
+        this.ENCRYPTION_KEY = crypto.scryptSync(
+            process.env.ENCRYPTION_KEY || 'default-key', 
+            'salt', 
+            32
+        );
     }
 
     async start() {
@@ -2642,16 +2641,13 @@ class DeviceMonitor extends EventEmitter {
     }
 
     decryptPassword(encryptedPassword) {
-        // Implement proper decryption
-        const crypto = require('crypto');
         const algorithm = 'aes-256-cbc';
-        const key = crypto.scryptSync(process.env.ENCRYPTION_KEY || 'default-key', 'salt', 32);
         
         try {
             const [ivHex, encrypted] = encryptedPassword.split(':');
             const iv = Buffer.from(ivHex, 'hex');
             
-            const decipher = crypto.createDecipheriv(algorithm, key, iv);
+            const decipher = crypto.createDecipheriv(algorithm, this.ENCRYPTION_KEY, iv);
             let decrypted = decipher.update(encrypted, 'hex', 'utf8');
             decrypted += decipher.final('utf8');
             
