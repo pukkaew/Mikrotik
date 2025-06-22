@@ -1425,6 +1425,9 @@ EOF
 
 # Create voucher printing service (with recommended improvement)
 create_voucher_printing_service() {
+    # Create services directory if not exists
+    mkdir -p "$APP_DIR/src/services"
+    
     cat << 'EOF' > "$APP_DIR/src/services/voucherPrintService.js"
 const fs = require('fs').promises;
 const path = require('path');
