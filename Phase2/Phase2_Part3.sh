@@ -1689,6 +1689,758 @@ EOF
     log "Voucher routes created"
 }
 
+# Update main application file to include voucher routes
+update_main_app() {
+    log "Updating main application file..."
+    
+    # Add voucher routes to server.js
+    sed -i "/\/\/ API Routes/a\\
+app.use('/api/vouchers', require('./routes/vouchers'));" "$APP_DIR/server.js"
+    
+    log "Main application updated"
+}
+
+# Create voucher management CLI tool
+create_voucher_cli() {
+    cat << 'EOF' > "$SCRIPT_DIR/voucher-cli.js"
+#!/usr/bin/env node
+
+const mongoose = require('mongoose');
+const program = require('commander');
+const chalk = require('chalk');
+const Table = require('cli-table3');
+const inquirer = require('inquirer');
+require('dotenv').config();
+
+// Models
+const Voucher = require('../app/models/Voucher');
+const { VoucherBatch } = require('../app/models/Voucher');
+const HotspotProfile = require('../app/models/HotspotProfile');
+const Organization = require('../app/models/Organization');
+
+// Database connection
+mongoose.connect(process.env.MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+});
+
+program
+    .version('1.0.0')
+    .description('Voucher Management CLI');
+
+// Generate vouchers
+program
+    .command('generate')
+    .description('Generate a batch of vouchers')
+    .option('-o, --org <id>', 'Organization ID')
+    .option('-p, --profile <id>', 'Profile ID')
+    .option('-c, --count <n>', 'Number of vouchers', parseInt)
+    .option('--prefix <prefix>', 'Voucher prefix')
+    .option('-d, --days <n>', 'Validity days', parseInt)
+    .option('--price <n>', 'Price per voucher', parseFloat)
+    .action(async (options) => {
+        try {
+            if (!options.org || !options.profile || !options.count) {
+                console.error(chalk.red('Organization ID, Profile ID, and count are required'));
+                process.exit(1);
+            }
+
+            const spinner = ora('Generating vouchers...').start();
+
+            const batch = await Voucher.generateBatch({
+                organizationId: options.org,
+                profileId: options.profile,
+                count: options.count,
+                prefix: options.prefix || '',
+                validityDays: options.days || 30,
+                price: options.price || 0,
+                createdBy: mongoose.Types.ObjectId() // System generated
+            });
+
+            spinner.succeed(chalk.green(`Generated ${options.count} vouchers`));
+            console.log(chalk.blue('Batch ID:'), batch._id);
+
+            process.exit(0);
+        } catch (error) {
+            console.error(chalk.red('Error:'), error.message);
+            process.exit(1);
+        }
+    });
+
+// List vouchers
+program
+    .command('list')
+    .description('List vouchers')
+    .option('-b, --batch <id>', 'Filter by batch ID')
+    .option('-s, --status <status>', 'Filter by status')
+    .option('-l, --limit <n>', 'Limit results', parseInt, 20)
+    .action(async (options) => {
+        try {
+            const query = {};
+            if (options.batch) query.batch = options.batch;
+            if (options.status) query.status = options.status;
+
+            const vouchers = await Voucher.find(query)
+                .populate('profile')
+                .limit(options.limit)
+                .sort({ createdAt: -1 });
+
+            const table = new Table({
+                head: ['Code', 'Profile', 'Status', 'Price', 'Valid Days', 'Created'],
+                colWidths: [20, 20, 12, 10, 12, 20]
+            });
+
+            vouchers.forEach(v => {
+                table.push([
+                    v.code,
+                    v.profile?.name || 'N/A',
+                    v.status,
+                    v.price?.amount || 0,
+                    v.validity?.days || 0,
+                    v.createdAt.toLocaleString()
+                ]);
+            });
+
+            console.log(table.toString());
+            process.exit(0);
+        } catch (error) {
+            console.error(chalk.red('Error:'), error.message);
+            process.exit(1);
+        }
+    });
+
+// Check expired vouchers
+program
+    .command('check-expired')
+    .description('Check and update expired vouchers')
+    .action(async () => {
+        try {
+            const spinner = ora('Checking expired vouchers...').start();
+            
+            const count = await Voucher.checkExpired();
+            
+            spinner.succeed(chalk.green(`Updated ${count} expired vouchers`));
+            process.exit(0);
+        } catch (error) {
+            console.error(chalk.red('Error:'), error.message);
+            process.exit(1);
+        }
+    });
+
+// Export vouchers
+program
+    .command('export')
+    .description('Export vouchers to CSV')
+    .option('-b, --batch <id>', 'Batch ID')
+    .option('-o, --output <file>', 'Output file', 'vouchers.csv')
+    .action(async (options) => {
+        try {
+            if (!options.batch) {
+                console.error(chalk.red('Batch ID is required'));
+                process.exit(1);
+            }
+
+            const vouchers = await Voucher.find({ batch: options.batch })
+                .populate('profile');
+
+            const csv = [
+                'Code,Profile,Status,Price,Valid Days,Created',
+                ...vouchers.map(v => [
+                    v.code,
+                    v.profile?.name || '',
+                    v.status,
+                    v.price?.amount || 0,
+                    v.validity?.days || 0,
+                    v.createdAt.toISOString()
+                ].join(','))
+            ].join('\n');
+
+            require('fs').writeFileSync(options.output, csv);
+            console.log(chalk.green(`Exported ${vouchers.length} vouchers to ${options.output}`));
+            process.exit(0);
+        } catch (error) {
+            console.error(chalk.red('Error:'), error.message);
+            process.exit(1);
+        }
+    });
+
+// Interactive mode
+program
+    .command('interactive')
+    .description('Interactive voucher management')
+    .action(async () => {
+        try {
+            const { action } = await inquirer.prompt([
+                {
+                    type: 'list',
+                    name: 'action',
+                    message: 'What would you like to do?',
+                    choices: [
+                        'Generate vouchers',
+                        'View statistics',
+                        'Export vouchers',
+                        'Check expired',
+                        'Exit'
+                    ]
+                }
+            ]);
+
+            switch (action) {
+                case 'Generate vouchers':
+                    await generateInteractive();
+                    break;
+                case 'View statistics':
+                    await viewStatistics();
+                    break;
+                case 'Export vouchers':
+                    await exportInteractive();
+                    break;
+                case 'Check expired':
+                    await checkExpiredInteractive();
+                    break;
+                default:
+                    process.exit(0);
+            }
+        } catch (error) {
+            console.error(chalk.red('Error:'), error.message);
+            process.exit(1);
+        }
+    });
+
+// Helper functions
+async function generateInteractive() {
+    const orgs = await Organization.find();
+    const profiles = await HotspotProfile.find();
+
+    const answers = await inquirer.prompt([
+        {
+            type: 'list',
+            name: 'org',
+            message: 'Select organization:',
+            choices: orgs.map(o => ({ name: o.name, value: o._id }))
+        },
+        {
+            type: 'list',
+            name: 'profile',
+            message: 'Select profile:',
+            choices: profiles.map(p => ({ name: p.name, value: p._id }))
+        },
+        {
+            type: 'number',
+            name: 'count',
+            message: 'Number of vouchers:',
+            default: 10
+        },
+        {
+            type: 'input',
+            name: 'prefix',
+            message: 'Voucher prefix (optional):'
+        },
+        {
+            type: 'number',
+            name: 'days',
+            message: 'Validity days:',
+            default: 30
+        },
+        {
+            type: 'number',
+            name: 'price',
+            message: 'Price per voucher:',
+            default: 0
+        }
+    ]);
+
+    const spinner = ora('Generating vouchers...').start();
+
+    const batch = await Voucher.generateBatch({
+        organizationId: answers.org,
+        profileId: answers.profile,
+        count: answers.count,
+        prefix: answers.prefix || '',
+        validityDays: answers.days,
+        price: answers.price,
+        createdBy: mongoose.Types.ObjectId()
+    });
+
+    spinner.succeed(chalk.green(`Generated ${answers.count} vouchers`));
+    console.log(chalk.blue('Batch ID:'), batch._id);
+}
+
+async function viewStatistics() {
+    const stats = await Voucher.aggregate([
+        {
+            $group: {
+                _id: '$status',
+                count: { $sum: 1 },
+                revenue: { $sum: '$price.amount' }
+            }
+        }
+    ]);
+
+    const table = new Table({
+        head: ['Status', 'Count', 'Revenue'],
+        colWidths: [15, 10, 15]
+    });
+
+    stats.forEach(s => {
+        table.push([s._id, s.count, s.revenue || 0]);
+    });
+
+    console.log(table.toString());
+}
+
+program.parse(process.argv);
+
+if (!process.argv.slice(2).length) {
+    program.outputHelp();
+}
+EOF
+
+    chmod +x "$SCRIPT_DIR/voucher-cli.js"
+    log "Voucher CLI tool created"
+}
+
+# Create voucher statistics cron job
+create_voucher_cron() {
+    cat << 'EOF' > "$SCRIPT_DIR/voucher-stats.js"
+#!/usr/bin/env node
+
+const mongoose = require('mongoose');
+const Voucher = require('../app/models/Voucher');
+const { VoucherBatch } = require('../app/models/Voucher');
+const logger = require('../app/utils/logger');
+require('dotenv').config();
+
+// Connect to database
+mongoose.connect(process.env.MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+});
+
+async function updateVoucherStatistics() {
+    try {
+        logger.info('Starting voucher statistics update...');
+
+        // Check expired vouchers
+        const expiredCount = await Voucher.checkExpired();
+        logger.info(`Updated ${expiredCount} expired vouchers`);
+
+        // Update batch statistics
+        const batches = await VoucherBatch.find();
+        
+        for (const batch of batches) {
+            const stats = await Voucher.aggregate([
+                { $match: { batch: batch._id } },
+                {
+                    $group: {
+                        _id: '$status',
+                        count: { $sum: 1 },
+                        revenue: { $sum: '$price.amount' }
+                    }
+                }
+            ]);
+
+            let sold = 0, used = 0, revenue = 0;
+            
+            stats.forEach(stat => {
+                if (stat._id === 'sold') sold = stat.count;
+                if (stat._id === 'used') {
+                    used = stat.count;
+                    revenue += stat.revenue || 0;
+                }
+                if (stat._id === 'sold') {
+                    revenue += stat.revenue || 0;
+                }
+            });
+
+            await VoucherBatch.findByIdAndUpdate(batch._id, {
+                sold,
+                used,
+                revenue
+            });
+        }
+
+        logger.info('Voucher statistics updated successfully');
+        
+        // Generate daily report
+        await generateDailyReport();
+        
+    } catch (error) {
+        logger.error('Failed to update voucher statistics:', error);
+    } finally {
+        mongoose.connection.close();
+    }
+}
+
+async function generateDailyReport() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const dailyStats = await Voucher.aggregate([
+        {
+            $match: {
+                soldAt: { $gte: today, $lt: tomorrow }
+            }
+        },
+        {
+            $group: {
+                _id: null,
+                count: { $sum: 1 },
+                revenue: { $sum: '$price.amount' }
+            }
+        }
+    ]);
+
+    if (dailyStats.length > 0) {
+        logger.info(`Daily voucher sales: ${dailyStats[0].count} vouchers, Revenue: ${dailyStats[0].revenue}`);
+    }
+}
+
+// Run the update
+updateVoucherStatistics();
+EOF
+
+    chmod +x "$SCRIPT_DIR/voucher-stats.js"
+    
+    # Add to crontab
+    (crontab -l 2>/dev/null; echo "0 1 * * * $SCRIPT_DIR/voucher-stats.js >> $LOG_DIR/voucher-stats.log 2>&1") | crontab -
+    
+    log "Voucher statistics cron job created"
+}
+
+# Install additional dependencies
+install_voucher_dependencies() {
+    log "Installing additional voucher dependencies..."
+    
+    cd "$APP_DIR"
+    npm install --save \
+        qrcode \
+        pdfkit \
+        exceljs \
+        handlebars \
+        puppeteer \
+        node-thermal-printer \
+        ora \
+        cli-table3 || {
+        log_error "Failed to install voucher dependencies"
+        return 1
+    }
+    
+    log "Voucher dependencies installed"
+}
+
+# Create voucher dashboard components
+create_voucher_dashboard() {
+    mkdir -p "$APP_DIR/src/components/vouchers"
+    
+    # Voucher Dashboard Component
+    cat << 'EOF' > "$APP_DIR/src/components/vouchers/VoucherDashboard.js"
+import React, { useState, useEffect } from 'react';
+import {
+    Card,
+    CardContent,
+    CardHeader,
+    Grid,
+    Typography,
+    Button,
+    Box,
+    Paper,
+    Chip,
+    IconButton,
+    Menu,
+    MenuItem,
+    Dialog
+} from '@mui/material';
+import {
+    Add as AddIcon,
+    Print as PrintIcon,
+    GetApp as DownloadIcon,
+    MoreVert as MoreIcon,
+    LocalOffer as VoucherIcon,
+    AttachMoney as MoneyIcon,
+    CheckCircle as ActiveIcon,
+    Cancel as ExpiredIcon
+} from '@mui/icons-material';
+import { Line, Doughnut } from 'react-chartjs-2';
+import VoucherBatchDialog from './VoucherBatchDialog';
+import VoucherList from './VoucherList';
+import { voucherAPI } from '../../services/api';
+import { useSnackbar } from 'notistack';
+
+function VoucherDashboard() {
+    const [statistics, setStatistics] = useState(null);
+    const [batches, setBatches] = useState([]);
+    const [selectedBatch, setSelectedBatch] = useState(null);
+    const [batchDialogOpen, setBatchDialogOpen] = useState(false);
+    const [loading, setLoading] = useState(true);
+    const { enqueueSnackbar } = useSnackbar();
+
+    useEffect(() => {
+        loadData();
+    }, []);
+
+    const loadData = async () => {
+        try {
+            setLoading(true);
+            const [statsRes, batchesRes] = await Promise.all([
+                voucherAPI.getStatistics(),
+                voucherAPI.getBatches()
+            ]);
+            setStatistics(statsRes.data.data);
+            setBatches(batchesRes.data.data);
+        } catch (error) {
+            enqueueSnackbar('Failed to load voucher data', { variant: 'error' });
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleCreateBatch = async (batchData) => {
+        try {
+            await voucherAPI.createBatch(batchData);
+            enqueueSnackbar('Voucher batch created successfully', { variant: 'success' });
+            setBatchDialogOpen(false);
+            loadData();
+        } catch (error) {
+            enqueueSnackbar(error.response?.data?.error || 'Failed to create batch', { variant: 'error' });
+        }
+    };
+
+    const handlePrintBatch = async (batchId, format = 'pdf') => {
+        try {
+            const response = await voucherAPI.printVouchers({
+                batchId,
+                format
+            });
+            
+            if (format === 'pdf') {
+                const blob = new Blob([response.data], { type: 'application/pdf' });
+                const url = window.URL.createObjectURL(blob);
+                window.open(url);
+            }
+        } catch (error) {
+            enqueueSnackbar('Failed to print vouchers', { variant: 'error' });
+        }
+    };
+
+    const chartData = {
+        labels: statistics?.dailySales?.map(d => d._id) || [],
+        datasets: [{
+            label: 'Daily Sales',
+            data: statistics?.dailySales?.map(d => d.revenue) || [],
+            borderColor: 'rgb(75, 192, 192)',
+            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+            tension: 0.1
+        }]
+    };
+
+    const doughnutData = {
+        labels: ['Available', 'Sold', 'Used', 'Expired'],
+        datasets: [{
+            data: [
+                statistics?.summary?.available || 0,
+                statistics?.summary?.sold || 0,
+                statistics?.summary?.used || 0,
+                statistics?.summary?.expired || 0
+            ],
+            backgroundColor: [
+                '#4CAF50',
+                '#2196F3',
+                '#FF9800',
+                '#F44336'
+            ]
+        }]
+    };
+
+    return (
+        <Box>
+            <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
+                <Typography variant="h4">Voucher Management</Typography>
+                <Button
+                    variant="contained"
+                    startIcon={<AddIcon />}
+                    onClick={() => setBatchDialogOpen(true)}
+                >
+                    Create Batch
+                </Button>
+            </Box>
+
+            {/* Statistics Cards */}
+            <Grid container spacing={3} mb={3}>
+                <Grid item xs={12} sm={6} md={3}>
+                    <Card>
+                        <CardContent>
+                            <Box display="flex" alignItems="center" justifyContent="space-between">
+                                <Box>
+                                    <Typography color="textSecondary" gutterBottom>
+                                        Total Vouchers
+                                    </Typography>
+                                    <Typography variant="h4">
+                                        {statistics?.summary?.total || 0}
+                                    </Typography>
+                                </Box>
+                                <VoucherIcon color="primary" fontSize="large" />
+                            </Box>
+                        </CardContent>
+                    </Card>
+                </Grid>
+
+                <Grid item xs={12} sm={6} md={3}>
+                    <Card>
+                        <CardContent>
+                            <Box display="flex" alignItems="center" justifyContent="space-between">
+                                <Box>
+                                    <Typography color="textSecondary" gutterBottom>
+                                        Available
+                                    </Typography>
+                                    <Typography variant="h4" color="success.main">
+                                        {statistics?.summary?.available || 0}
+                                    </Typography>
+                                </Box>
+                                <ActiveIcon color="success" fontSize="large" />
+                            </Box>
+                        </CardContent>
+                    </Card>
+                </Grid>
+
+                <Grid item xs={12} sm={6} md={3}>
+                    <Card>
+                        <CardContent>
+                            <Box display="flex" alignItems="center" justifyContent="space-between">
+                                <Box>
+                                    <Typography color="textSecondary" gutterBottom>
+                                        Used
+                                    </Typography>
+                                    <Typography variant="h4" color="warning.main">
+                                        {statistics?.summary?.used || 0}
+                                    </Typography>
+                                </Box>
+                                <CheckCircle color="warning" fontSize="large" />
+                            </Box>
+                        </CardContent>
+                    </Card>
+                </Grid>
+
+                <Grid item xs={12} sm={6} md={3}>
+                    <Card>
+                        <CardContent>
+                            <Box display="flex" alignItems="center" justifyContent="space-between">
+                                <Box>
+                                    <Typography color="textSecondary" gutterBottom>
+                                        Revenue
+                                    </Typography>
+                                    <Typography variant="h4">
+                                        ฿{statistics?.summary?.revenue || 0}
+                                    </Typography>
+                                </Box>
+                                <MoneyIcon color="primary" fontSize="large" />
+                            </Box>
+                        </CardContent>
+                    </Card>
+                </Grid>
+            </Grid>
+
+            {/* Charts */}
+            <Grid container spacing={3} mb={3}>
+                <Grid item xs={12} md={8}>
+                    <Card>
+                        <CardHeader title="Daily Revenue (Last 30 Days)" />
+                        <CardContent>
+                            <Line data={chartData} options={{ maintainAspectRatio: false }} height={300} />
+                        </CardContent>
+                    </Card>
+                </Grid>
+
+                <Grid item xs={12} md={4}>
+                    <Card>
+                        <CardHeader title="Voucher Status" />
+                        <CardContent>
+                            <Doughnut data={doughnutData} />
+                        </CardContent>
+                    </Card>
+                </Grid>
+            </Grid>
+
+            {/* Batches */}
+            <Card>
+                <CardHeader title="Recent Batches" />
+                <CardContent>
+                    <Grid container spacing={2}>
+                        {batches.map(batch => (
+                            <Grid item xs={12} md={6} lg={4} key={batch._id}>
+                                <Paper elevation={2} sx={{ p: 2 }}>
+                                    <Box display="flex" justifyContent="space-between" alignItems="start">
+                                        <Box>
+                                            <Typography variant="h6">
+                                                {batch.name || `Batch ${batch._id.slice(-6)}`}
+                                            </Typography>
+                                            <Typography variant="body2" color="textSecondary">
+                                                Profile: {batch.profile?.name}
+                                            </Typography>
+                                            <Typography variant="body2" color="textSecondary">
+                                                Created: {new Date(batch.createdAt).toLocaleDateString()}
+                                            </Typography>
+                                            <Box mt={1}>
+                                                <Chip
+                                                    label={`Total: ${batch.count}`}
+                                                    size="small"
+                                                    sx={{ mr: 1 }}
+                                                />
+                                                <Chip
+                                                    label={`Available: ${batch.available}`}
+                                                    size="small"
+                                                    color="success"
+                                                />
+                                            </Box>
+                                        </Box>
+                                        <Box>
+                                            <IconButton
+                                                onClick={() => handlePrintBatch(batch._id)}
+                                                size="small"
+                                            >
+                                                <PrintIcon />
+                                            </IconButton>
+                                            <IconButton
+                                                onClick={() => setSelectedBatch(batch)}
+                                                size="small"
+                                            >
+                                                <MoreIcon />
+                                            </IconButton>
+                                        </Box>
+                                    </Box>
+                                </Paper>
+                            </Grid>
+                        ))}
+                    </Grid>
+                </CardContent>
+            </Card>
+
+            {/* Dialogs */}
+            <VoucherBatchDialog
+                open={batchDialogOpen}
+                onClose={() => setBatchDialogOpen(false)}
+                onSubmit={handleCreateBatch}
+            />
+
+            {selectedBatch && (
+                <VoucherList
+                    batch={selectedBatch}
+                    onClose={() => setSelectedBatch(null)}
+                />
+            )}
+        </Box>
+    );
+}
+
+export default VoucherDashboard;
+EOF
+
+    log "Voucher dashboard components created"
+}
+
 # =============================================================================
 # MAIN EXECUTION
 # =============================================================================
@@ -1709,6 +2461,24 @@ main() {
         exit 1
     }
     
+    # Install additional dependencies
+    install_voucher_dependencies || {
+        log_error "Failed to install voucher dependencies"
+        exit 1
+    }
+    
+    # Update main application
+    update_main_app
+    
+    # Create CLI tools
+    create_voucher_cli
+    
+    # Create cron jobs
+    create_voucher_cron
+    
+    # Create dashboard components
+    create_voucher_dashboard
+    
     log "======================================"
     log "Phase 2 Part 3 completed successfully!"
     log ""
@@ -1719,6 +2489,15 @@ main() {
     log "- Voucher sales tracking"
     log "- Voucher activation"
     log "- Revenue tracking"
+    log "- CLI management tool: $SCRIPT_DIR/voucher-cli.js"
+    log "- Daily statistics cron job"
+    log "- React dashboard components"
+    log ""
+    log "CLI Usage Examples:"
+    log "  Generate vouchers: $SCRIPT_DIR/voucher-cli.js generate -o ORG_ID -p PROFILE_ID -c 100"
+    log "  List vouchers: $SCRIPT_DIR/voucher-cli.js list -s available"
+    log "  Export vouchers: $SCRIPT_DIR/voucher-cli.js export -b BATCH_ID -o vouchers.csv"
+    log "  Interactive mode: $SCRIPT_DIR/voucher-cli.js interactive"
     log ""
     log "Continue with Part 4 for Reporting System..."
 }
