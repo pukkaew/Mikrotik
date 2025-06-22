@@ -438,6 +438,7 @@ const logger = require('../utils/logger');
 const { validationResult } = require('express-validator');
 const PDFDocument = require('pdfkit');
 const ExcelJS = require('exceljs');
+const { CheckCircle } = require('@mui/icons-material');
 
 class VoucherController {
     // Get all voucher batches
@@ -1710,6 +1711,7 @@ const program = require('commander');
 const chalk = require('chalk');
 const Table = require('cli-table3');
 const inquirer = require('inquirer');
+const ora = require('ora');
 require('dotenv').config();
 
 // Models
@@ -2318,7 +2320,7 @@ function VoucherDashboard() {
                                         {statistics?.summary?.used || 0}
                                     </Typography>
                                 </Box>
-                                <CheckCircle color="warning" fontSize="large" />
+                                <ActiveIcon color="warning" fontSize="large" />
                             </Box>
                         </CardContent>
                     </Card>
