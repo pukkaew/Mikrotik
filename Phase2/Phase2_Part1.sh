@@ -2551,3 +2551,7 @@ EOF
 }
 
 module.exports = DeviceMonitor;
+EOFMONITOR
+}
+EOF
+}
