@@ -2110,8 +2110,12 @@ EOF
 
     chmod +x "$SCRIPT_DIR/voucher-stats.js"
     
-    # Add to crontab
-    (crontab -l 2>/dev/null; echo "0 1 * * * $SCRIPT_DIR/voucher-stats.js >> $LOG_DIR/voucher-stats.log 2>&1") | crontab -
+    # Add to crontab - check if crontab exists first
+    if command -v crontab &> /dev/null; then
+        (crontab -l 2>/dev/null || true; echo "0 1 * * * $SCRIPT_DIR/voucher-stats.js >> $LOG_DIR/voucher-stats.log 2>&1") | crontab -
+    else
+        log_warning "crontab not available, skipping cron job setup"
+    fi
     
     log "Voucher statistics cron job created"
 }
@@ -2479,10 +2483,14 @@ main() {
     create_voucher_cli
     
     # Create cron jobs
-    create_voucher_cron
+    create_voucher_cron || {
+        log_warning "Failed to create voucher cron job, continuing..."
+    }
     
     # Create dashboard components
-    create_voucher_dashboard
+    create_voucher_dashboard || {
+        log_warning "Failed to create dashboard components, continuing..."
+    }
     
     log "======================================"
     log "Phase 2 Part 3 completed successfully!"
