@@ -99,7 +99,9 @@ phase2_1_device_management() {
         handlebars \
         puppeteer \
         node-thermal-printer \
-        nodemailer || {
+        nodemailer \
+        winston \
+        express-validator || {
         log_error "Failed to install npm dependencies"
         return 1
     }
@@ -130,6 +132,9 @@ phase2_1_device_management() {
     
     # Create MikroTik script templates
     create_mikrotik_templates
+    
+    # Create device routes
+    create_device_routes
     
     log "Phase 2.1 completed!"
 }
